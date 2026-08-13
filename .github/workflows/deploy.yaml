@@ -7,7 +7,6 @@ on:
         description: Docker image URI
         required: true
         type: string
-
     secrets:
       ARGOCD_AUTH_TOKEN:
         description: Argo CD authentication token
