@@ -1,0 +1,48 @@
+name: Build and Push to ECR
+
+on:
+  workflow_call:
+    inputs:
+      ecr-repository:
+        description: ECR repository name
+        required: true
+        type: string
+    outputs:
+      image:
+        description: Docker image URI
+        value: ${{ jobs.build-and-push.outputs.image }}
+permissions:
+  id-token: write   # Required for requesting the OIDC JWT token
+  contents: read    # Required to checkout the code
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::932399238655:role/github-actions-ecr-role
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
