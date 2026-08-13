@@ -7,14 +7,11 @@ on:
         description: Docker image URI
         required: true
         type: string
-<<<<<<< HEAD
-=======
 
     secrets:
       ARGOCD_AUTH_TOKEN:
         description: Argo CD authentication token
         required: true
->>>>>>> a98a84f (bug)
 
 jobs:
   deploy:
