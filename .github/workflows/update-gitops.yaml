@@ -24,7 +24,9 @@ on:
         type: string
 
     secrets:
-      GITOPS_PAT:
+      GITOPS_APP_ID:
+        required: true
+      GITOPS_APP_PRIVATE_KEY:
         required: true
 
 jobs:
@@ -32,11 +34,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GITOPS_APP_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: devops-end2end
+          repositories: gitops
+
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
           repository: devops-end2end/gitops
-          token: ${{ secrets.GITOPS_PAT }}
+          token: ${{ steps.app-token.outputs.token }}
           path: gitops
 
       - name: Install Kustomize
