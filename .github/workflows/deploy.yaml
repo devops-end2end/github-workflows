@@ -48,8 +48,7 @@ jobs:
 
           ARGO_OPTS="--server ${ARGOCD_SERVER} \
             --auth-token ${ARGOCD_AUTH_TOKEN} \
-            --insecure \
-            --grpc-web"
+            --plaintext"
 
           APP_NAME="argocd/${PROJECT_NAME}-${ENV}-${DATACENTER}"
 
