@@ -1,0 +1,107 @@
+name: Scaffold New Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: 'Name of the new service (e.g., my-cool-service)'
+        required: true
+        type: string
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          ref: main
+
+      - name: Validate Input
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+
+          if [[ -z "$SERVICE_NAME" ]]; then
+            echo "::error::service_name is required"
+            exit 1
+          fi
+
+          # Only allow lowercase alphanumeric and hyphens
+          if [[ ! "$SERVICE_NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error::service_name must be lowercase alphanumeric with hyphens only (e.g., my-cool-service)"
+            exit 1
+          fi
+
+          if [ -d "apps/$SERVICE_NAME" ]; then
+            echo "::error::Service 'apps/$SERVICE_NAME' already exists"
+            exit 1
+          fi
+
+          echo "Validated: '$SERVICE_NAME' is a valid new service name"
+
+      - name: Copy Template
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          cp -r apps/_template "apps/$SERVICE_NAME"
+          echo "Copied apps/_template → apps/$SERVICE_NAME"
+
+      - name: Disable Kustomization Files
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          # Rename kustomization.yaml so ArgoCD does not auto-sync until manually configured
+          mv "apps/$SERVICE_NAME/dev-ric1/kustomization.yaml" "apps/$SERVICE_NAME/dev-ric1/kustomization_DISABLE.yaml"
+          echo "Renamed dev-ric1/kustomization.yaml → kustomization_DISABLE.yaml"
+
+      - name: Rename Service References in Base Manifests
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          TEMPLATE_NAME="experimentation-platform-mfe"
+
+          # Replace all occurrences of the template name in base manifests
+          for file in apps/"$SERVICE_NAME"/base/deployment.yaml \
+                      apps/"$SERVICE_NAME"/base/service.yaml \
+                      apps/"$SERVICE_NAME"/base/ingress.yaml \
+                      apps/"$SERVICE_NAME"/base/kustomization.yaml; do
+            if [ -f "$file" ]; then
+              sed -i "s|${TEMPLATE_NAME}|${SERVICE_NAME}|g" "$file"
+              echo "Updated: $file"
+            fi
+          done
+
+      - name: Rename Service References in Overlay
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          TEMPLATE_NAME="experimentation-platform-mfe"
+
+          # Update dev-ric1 overlay
+          for file in apps/"$SERVICE_NAME"/dev-ric1/kustomization_DISABLE.yaml \
+                      apps/"$SERVICE_NAME"/dev-ric1/config.conf; do
+            if [ -f "$file" ]; then
+              sed -i "s|${TEMPLATE_NAME}|${SERVICE_NAME}|g" "$file"
+              echo "Updated: $file"
+            fi
+          done
+
+      - name: Verify Changes
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          echo "=== Scaffolded files for '$SERVICE_NAME' ==="
+          find "apps/$SERVICE_NAME" -type f | sort
+          echo ""
+          echo "=== Verifying no template references remain ==="
+          if grep -r "experimentation-platform-mfe" "apps/$SERVICE_NAME"; then
+            echo "::warning::Some template references may still exist"
+          else
+            echo "All references updated successfully"
+          fi
+
+      - name: Commit and Push
+        run: |
+          SERVICE_NAME="${{ inputs.service_name }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add "apps/$SERVICE_NAME"
+          git commit -m "scaffold: create new service '$SERVICE_NAME' from template"
+          git push origin HEAD:main
+          echo "Pushed new service '$SERVICE_NAME' to main"

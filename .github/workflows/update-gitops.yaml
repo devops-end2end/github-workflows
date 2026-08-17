@@ -1,0 +1,87 @@
+name: Update GitOps
+
+on:
+  workflow_call:
+    inputs:
+      PROJECT_NAME:
+        description: "Project name"
+        required: true
+        type: string
+
+      ENV:
+        description: "Environment"
+        required: true
+        type: string
+
+      DATACENTER:
+        description: "Datacenter"
+        required: true
+        type: string
+
+      IMAGE:
+        description: "Complete container image reference"
+        required: true
+        type: string
+
+    secrets:
+      GITOPS_PAT:
+        required: true
+
+jobs:
+  update-gitops:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: devops-end2end/gitops
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Install Kustomize
+        run: |
+          KUSTOMIZE_VERSION="5.4.1"
+
+          curl -sLO "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+
+          tar -xzf "kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+
+          chmod +x kustomize
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update Image
+        env:
+          PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+          ENV: ${{ inputs.ENV }}
+          DATACENTER: ${{ inputs.DATACENTER }}
+          IMAGE: ${{ inputs.IMAGE }}
+        run: |
+          cd "gitops/${PROJECT_NAME}/env/${ENV}-${DATACENTER}"
+
+          echo "Updating image to:"
+          echo "${IMAGE}"
+
+          kustomize edit set image "${IMAGE}"
+
+      - name: Commit and push
+        env:
+          PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+          ENV: ${{ inputs.ENV }}
+          DATACENTER: ${{ inputs.DATACENTER }}
+        run: |
+          cd gitops
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update ${PROJECT_NAME} ${ENV}-${DATACENTER}"
+
+          git push

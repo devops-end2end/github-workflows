@@ -1,0 +1,160 @@
+name: ArgoCD Kustomize Sync
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Path to the kustomize overlay (e.g., app/{project_name}/{environment})'
+        required: true
+        type: string
+      environment_suffix:
+        description: 'Suffix for the environment for ad-hoc variants (e.g., qa, sample, temp)'
+        required: false
+        type: string
+      image_name:
+        description: 'The name of the image as defined in kustomization.yaml'
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      project_name:
+        description: 'The name of the project'
+        required: true
+        type: string
+      deploy_verify:
+        description: 'Whether to verify the deployment after updating'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      GITOPS_TOKEN:
+        required: true
+      ARGOCD_SERVER:
+        required: false
+      ARGOCD_AUTH_TOKEN:
+        required: false
+
+jobs:
+  update-kustomize:
+    runs-on: temp-runner
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout GitOps Repository
+        uses: actions/checkout@v5
+        with:
+          repository: amp-pilot/cd-deploy-configs
+          token: ${{ secrets.GITOPS_TOKEN }}
+          ref: ${{ startsWith(inputs.environment, 'prod') && 'prod' || 'main' }}
+
+      - name: Validate Project and Environment Path
+        run: |
+          echo "Validating project and environment path..."
+          echo "current project: ${{ inputs.project_name }}"
+          echo "current environment: ${{ inputs.environment }}"
+          echo "current image name: ${{ inputs.image_name }}"
+          echo "current image tag: ${{ inputs.image_tag }}"
+          
+          if [ ! -d "apps/${{ inputs.project_name }}" ]; then
+            echo "::error::Project '${{ inputs.project_name }}' not found under apps/"
+            exit 1
+          fi
+
+          if [ ! -d "apps/${{ inputs.project_name }}/${{ inputs.environment }}" ]; then
+            echo "::error::Environment '${{ inputs.environment }}' not found under apps/${{ inputs.project_name }}/"
+            exit 1
+          fi
+          echo "Validated: apps/${{ inputs.project_name }}/${{ inputs.environment }} exists"
+
+      - name: Install Kustomize
+        run: |
+          # 1. Define the version (v5.4.1 is current/stable)
+          KUSTOMIZE_VERSION="5.4.1"
+          
+          # 2. Download with an explicit filename
+          curl -sLO "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          
+          # 3. Extract the exact file (No wildcard needed)
+          tar -xzf "kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          
+          # 4. Move to bin
+          chmod +x kustomize
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update Image Tag
+        run: |
+          cd apps/${{ inputs.project_name }}/${{ inputs.environment }}
+          kustomize edit set image ${{ inputs.image_name }}=${{ inputs.image_name }}:${{ inputs.image_tag }}
+          
+      - name: Commit Changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+          else
+            git commit -m "deploy: update ${{ inputs.image_name }} to ${{ inputs.image_tag }} in apps/${{ inputs.project_name }}/${{ inputs.environment }}"
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+          fi
+
+      - name: Push to Main
+        if: env.HAS_CHANGES == 'true' && !startsWith(inputs.environment, 'prod')
+        run: |
+          git push origin HEAD:main
+          echo "Pushed changes to main branch successfully"
+
+      - name: Create Pull Request to Prod
+        if: env.HAS_CHANGES == 'true' && startsWith(inputs.environment, 'prod')
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          BRANCH_NAME="deploy/${{ inputs.project_name }}-${{ inputs.environment }}-${{ inputs.image_tag }}"
+          git checkout -b "$BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          gh pr create \
+            --repo amp-pilot/cd-deploy-configs \
+            --base prod \
+            --head "$BRANCH_NAME" \
+            --title "deploy: ${{ inputs.project_name }} ${{ inputs.image_tag }} → ${{ inputs.environment }}" \
+            --body "Automated PR to update **${{ inputs.image_name }}** to \`${{ inputs.image_tag }}\` in \`apps/${{ inputs.project_name }}/${{ inputs.environment }}\`"
+          echo "Created pull request to prod branch successfully"
+
+  deploy-verification:
+    needs: update-kustomize
+    if: inputs.deploy_verify == true
+    runs-on: temp-runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Argo CD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
+
+      - name: Verify Revision and Sync
+        run: |
+          ARGO_OPTS="--server ${{ secrets.ARGOCD_SERVER }} --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure --grpc-web"
+          APP_NAME="${{ inputs.project_name }}"
+          CURRENT_SHA=${{ github.sha }}
+
+          # 1. Check which revision Argo CD is currently targeting
+          TARGET_REVISION=$(argocd app get $APP_NAME $ARGO_OPTS -o json | jq -r '.status.sync.revision')
+
+          echo "GitHub SHA: $CURRENT_SHA"
+          echo "Argo CD Current Revision: $TARGET_REVISION"
+
+          # 2. Trigger sync if the revisions don't match
+          if [ "$TARGET_REVISION" != "$CURRENT_SHA" ]; then
+            echo "Revisions do not match. Triggering manual sync..."
+            argocd app sync $APP_NAME $ARGO_OPTS --revision $CURRENT_SHA
+          else
+            echo "Argo CD is already tracking the correct revision."
+          fi
+
+          # 3. Wait for the application to be Synced and Healthy
+          echo "Waiting for application to reach healthy state..."
+          argocd app wait $APP_NAME $ARGO_OPTS --sync --health --timeout 600

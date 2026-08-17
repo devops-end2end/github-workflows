@@ -1,0 +1,204 @@
+ci.yml 
+name: Build, Test, and Push Docker Image
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build and Test Java App
+    runs-on: [self-hosted, lt0280]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'corretto'
+          cache: maven
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.9
+
+      - name: Build and test
+        run: mvn clean package
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: [self-hosted, lt0280]
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "ampdockerci" --password-stdin
+
+      - name: Build Docker image
+        run: docker build -f ./docker/Dockerfile -t admarketplace/${{ github.event.repository.name }}:${{ steps.version.outputs.version }} -t admarketplace/${{ github.event.repository.name }}:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push admarketplace/${{ github.event.repository.name }}:${{ steps.version.outputs.version }}
+          docker push admarketplace/${{ github.event.repository.name }}:latest
+
+      - name: Build test Docker image
+        run: docker build -f ./docker/Dockerfile.test -t admarketplace/${{ github.event.repository.name }}:test .
+
+      - name: Push test Docker image
+        run: docker push admarketplace/${{ github.event.repository.name }}:test
+
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: [self-hosted, lt0280]
+    needs: build-and-push
+    environment: dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Argo Workflows
+        run: |
+          # Source project-level CI/CD overrides if present
+          if [ -f cicd.properties ]; then
+            echo "[INFO] Sourcing cicd.properties"
+            set -a
+            . ./cicd.properties
+            set +a
+          else
+            echo "[INFO] No cicd.properties found, using defaults"
+          fi
+
+          docker run --rm --pull "always" \
+            --network host \
+            --entrypoint /app/scripts/cd-deploy-wrapper.sh \
+            -e ARGO_SERVER="$ARGOWORKFLOW_HOST" \
+            -e ARGO_TOKEN="$ARGOWORKFLOW_TOKEN" \
+            -e ARGOWORKFLOW_HOST="$ARGOWORKFLOW_HOST" \
+            -e ARGOWORKFLOW_TOKEN="$ARGOWORKFLOW_TOKEN" \
+            -e ARGO_TEMPLATE_NAME="cd-deploy-github-template" \
+            -e PROJECT_NAME="${{ github.event.repository.name }}" \
+            -e DEPLOYMENT_ENVIRONMENT="dev" \
+            -e BUILD_VERSION="${{ steps.version.outputs.version }}" \
+            -e PROJECT_BRANCH="${{ github.ref_name }}" \
+            -e ENABLE_VARIANT_CONFIGS="${ENABLE_VARIANT_CONFIGS:-true}" \
+            -e SKIP_CLEANUP="${SKIP_CLEANUP:-true}" \
+            -e ARGOCD_WAIT_TIMEOUT="${ARGOCD_WAIT_TIMEOUT:-300}" \
+            -e CD_DEPLOY_CONFIGS_BRANCH="${CD_DEPLOY_CONFIGS_BRANCH:-main}" \
+            admarketplace/amp-argowf-cli:3.5
+
+  deploy-stage:
+    name: Deploy to Stage
+    runs-on: [self-hosted, lt0280]
+    needs: deploy-dev
+    environment: stage
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Argo Workflows
+        run: |
+          # Source project-level CI/CD overrides if present
+          if [ -f cicd.properties ]; then
+            echo "[INFO] Sourcing cicd.properties"
+            set -a
+            . ./cicd.properties
+            set +a
+          else
+            echo "[INFO] No cicd.properties found, using defaults"
+          fi
+
+          docker run --rm --pull "always" \
+            --network host \
+            --entrypoint /app/scripts/cd-deploy-wrapper.sh \
+            -e ARGO_SERVER="$ARGOWORKFLOW_HOST" \
+            -e ARGO_TOKEN="$ARGOWORKFLOW_TOKEN" \
+            -e ARGOWORKFLOW_HOST="$ARGOWORKFLOW_HOST" \
+            -e ARGOWORKFLOW_TOKEN="$ARGOWORKFLOW_TOKEN" \
+            -e ARGO_TEMPLATE_NAME="cd-deploy-github-template" \
+            -e PROJECT_NAME="${{ github.event.repository.name }}" \
+            -e DEPLOYMENT_ENVIRONMENT="stage" \
+            -e BUILD_VERSION="${{ steps.version.outputs.version }}" \
+            -e PROJECT_BRANCH="${{ github.ref_name }}" \
+            -e ENABLE_VARIANT_CONFIGS="${ENABLE_VARIANT_CONFIGS:-true}" \
+            -e SKIP_CLEANUP="${SKIP_CLEANUP:-true}" \
+            -e ARGOCD_WAIT_TIMEOUT="${ARGOCD_WAIT_TIMEOUT:-300}" \
+            -e CD_DEPLOY_CONFIGS_BRANCH="${CD_DEPLOY_CONFIGS_BRANCH:-main}" \
+            admarketplace/amp-argowf-cli:3.5
+
+  # Alternative: use the local composite action (./.github/actions/argo-deploy)
+  # The action sources cicd.properties internally and has sensible defaults
+  # for template-name, cd-deploy-configs-branch, enable-variant-configs,
+  # skip-cleanup, argocd-wait-timeout, argocd-env, and docker-image.
+  #
+  # deploy-dev:
+  #   name: Deploy to Dev
+  #   runs-on: [self-hosted, lt0280]
+  #   needs: build-and-push
+  #   environment: dev
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Set version
+  #       id: version
+  #       run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+  #
+  #     - name: Deploy to Argo Workflows
+  #       uses: ./.github/actions/argo-deploy
+  #       with:
+  #         argo-server: ${{ env.ARGOWORKFLOW_HOST }}
+  #         argo-token: ${{ env.ARGOWORKFLOW_TOKEN }}
+  #         project-name: ${{ github.event.repository.name }}
+  #         build-version: ${{ steps.version.outputs.version }}
+  #         project-branch: ${{ github.ref_name }}
+  #         promotion-stage: dev
+  #
+  # deploy-stage:
+  #   name: Deploy to Stage
+  #   runs-on: [self-hosted, lt0280]
+  #   needs: deploy-dev
+  #   environment: stage
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Set version
+  #       id: version
+  #       run: echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+  #
+  #     - name: Deploy to Argo Workflows
+  #       uses: ./.github/actions/argo-deploy
+  #       with:
+  #         argo-server: ${{ env.ARGOWORKFLOW_HOST }}
+  #         argo-token: ${{ env.ARGOWORKFLOW_TOKEN }}
+  #         project-name: ${{ github.event.repository.name }}
+  #         build-version: ${{ steps.version.outputs.version }}
+  #         project-branch: ${{ github.ref_name }}
+  #         promotion-stage: stage
+

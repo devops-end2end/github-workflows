@@ -1,0 +1,905 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cd-deploy-github-template
+  namespace: dev
+  labels:
+    argowf-template: 'true'
+spec:
+  podMetadata:
+    annotations:
+      karpenter.sh/do-not-disrupt: "true"
+  serviceAccountName: workflows-service
+  entrypoint: cd-deploy
+  onExit: send-exit-metric
+  # podGC:
+  #   strategy: OnPodSuccess
+  ttlStrategy:
+    secondsAfterCompletion: 7200  # 2 hours
+  timeout: 3600  # 1 hour total workflow timeout
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: cd-github-workspace-pvc
+
+  # Parameters for CD deployment workflow (without Kargo)
+  arguments:
+    parameters:
+    - name: project_name
+      value: ""
+      description: "Project/app name (e.g., ci-test-python-project)"
+    - name: build_tag
+      value: ""
+      description: "Docker image tag or build version"
+    - name: argocd_env
+      value: "npe"
+      description: "ArgoCD environment (npe/prod)"
+    - name: cd_deploy_configs_branch
+      value: "main"
+      description: "Git branch for cd-deploy-configs"
+    - name: promotion_stage
+      value: ""
+      description: "Promotion stage (dev/stage)"
+    - name: skip_cleanup
+      value: "false"
+      description: "If true, skip deleting the ApplicationSet during cleanup"
+    - name: timeout
+      value: "300"
+      description: "Timeout for ArgoCD app wait in seconds (default: 300)"
+    - name: project_branch
+      value: ""
+      description: "Bitbucket branch name for variant configs"
+    - name: enable_variant_configs
+      value: "false"
+      description: "Enable variant deployment configs with branch suffix"
+  imagePullSecrets:
+    - name: docker-registry-access-token-ampdockercirw
+  templates:
+  # Template: cd-deploy
+  # Purpose: Main entry point for CD deployment workflow (without Kargo)
+  # Process: Clone configs -> Validate -> Generate combos -> Apply appsets -> Wait for apps -> Cleanup
+  - name: cd-deploy
+    inputs:
+      parameters:
+      - name: project_name
+      - name: build_tag
+      - name: argocd_env
+      - name: cd_deploy_configs_branch
+      - name: promotion_stage
+      - name: skip_cleanup
+      - name: timeout
+      - name: project_branch
+      - name: enable_variant_configs
+
+    steps:
+    # Step 1: Clone cd-deploy-configs repository to access deployment configurations
+    - - name: clone-config-repo
+        templateRef:
+          name: github-template
+          template: main
+        arguments:
+          parameters:
+          - name: git_repo
+            value: "cd-deploy-configs"
+          - name: branch
+            value: "{{inputs.parameters.cd_deploy_configs_branch}}"
+
+    # Step 2: Send deployment started metric to DataDog
+    - - name: send-start-metric
+        templateRef:
+          name: datadog-statsd-template
+          template: send-metric
+        arguments:
+          parameters:
+          - name: METRIC_PATH
+            value: "cd.deployment.started"
+          - name: METRIC_VALUE
+            value: "1"
+          - name: METRIC_TYPE
+            value: "c"
+          - name: METRIC_TAGS
+            value: "project:{{inputs.parameters.project_name}},branch:{{inputs.parameters.project_branch}},stage:{{inputs.parameters.promotion_stage}},build_tag:{{inputs.parameters.build_tag}}"
+
+    # Generate combinations
+    - - name: generate-combinations
+        template: generate-deploy-combinations
+        arguments:
+          parameters:
+          - name: project_name
+            value: "{{inputs.parameters.project_name}}"
+          - name: promotion_stage
+            value: "{{inputs.parameters.promotion_stage}}"
+          - name: project_branch
+            value: "{{inputs.parameters.project_branch}}"
+          - name: enable_variant_configs
+            value: "{{inputs.parameters.enable_variant_configs}}"
+
+    # Validate standards for each combination
+    - - name: validate-standards
+        template: validate-standards
+        withParam: "{{steps.generate-combinations.outputs.parameters.combinations}}"
+        arguments:
+          parameters:
+          - name: project_name
+            value: "{{inputs.parameters.project_name}}"
+          - name: environment
+            value: "{{item.environment}}"
+          - name: datacenter
+            value: "{{item.datacenter}}"
+          - name: promotion_stage
+            value: "{{inputs.parameters.promotion_stage}}"
+          - name: project_branch
+            value: "{{inputs.parameters.project_branch}}"
+          - name: enable_variant_configs
+            value: "{{inputs.parameters.enable_variant_configs}}"
+
+    # Step 3: Update kustomize image tags with build_tag (before ApplicationSet creation)
+    - - name: update-kustomize-image
+        template: update-kustomize-image
+        withParam: "{{steps.generate-combinations.outputs.parameters.combinations}}"
+        arguments:
+          parameters:
+          - name: project_name
+            value: "{{inputs.parameters.project_name}}"
+          - name: environment
+            value: "{{item.environment}}"
+          - name: datacenter
+            value: "{{item.datacenter}}"
+          - name: build_tag
+            value: "{{inputs.parameters.build_tag}}"
+          - name: project_branch
+            value: "{{inputs.parameters.project_branch}}"
+          - name: enable_variant_configs
+            value: "{{inputs.parameters.enable_variant_configs}}"
+
+    # Step 4: Commit and push kustomize changes
+    - - name: commit-kustomize-changes
+        templateRef:
+          name: github-template
+          template: git-commit-push
+        arguments:
+          parameters:
+          - name: git_repo
+            value: "cd-deploy-configs"
+          - name: branch
+            value: "{{inputs.parameters.cd_deploy_configs_branch}}"
+          - name: commit_message
+            value: "Deploy {{inputs.parameters.project_name}} {{inputs.parameters.build_tag}} to {{inputs.parameters.promotion_stage}} [skip ci]"
+          - name: files_to_add
+          ## HACK ##
+            value: "_apps/{{inputs.parameters.project_name}}/env/*/kustomization.yaml"
+          - name: git_user_name
+            value: "CD Deploy Bot"
+          - name: git_user_email
+            value: "cd-workflows@admarketplace.net"
+
+    # Step 5: Apply ApplicationSets to ArgoCD (will pick up updated kustomize files)
+    - - name: apply-appsets
+        templateRef:
+          name: argocd-cli-template
+          template: apply-appset
+        arguments:
+          parameters:
+          - name: project_name
+            value: "{{inputs.parameters.project_name}}"
+          - name: promotion_stage
+            value: "{{inputs.parameters.promotion_stage}}"
+          - name: argocd_env
+            value: "{{inputs.parameters.argocd_env}}"
+          - name: appset_file
+            value: "{{steps.generate-combinations.outputs.parameters.appset_file}}"
+
+    # Step 7: Sync ArgoCD applications
+    - - name: sync-argocd-apps
+        templateRef:
+          name: argocd-cli-template
+          template: sync-app
+        withParam: "{{steps.generate-combinations.outputs.parameters.combinations}}"
+        arguments:
+          parameters:
+          - name: argocd_app_name
+            value: "{{item.app_name}}"
+          - name: argocd_env
+            value: "{{inputs.parameters.argocd_env}}"
+
+    # Step 6: Wait for ArgoCD applications to sync and become healthy
+    - - name: wait-argocd-apps
+        templateRef:
+          name: argocd-cli-template
+          template: wait-app
+        withParam: "{{steps.generate-combinations.outputs.parameters.combinations}}"
+        arguments:
+          parameters:
+          - name: argocd_app_name
+            value: "{{item.app_name}}"
+          - name: argocd_env
+            value: "{{inputs.parameters.argocd_env}}"
+          - name: timeout
+            value: "{{inputs.parameters.timeout}}"
+          - name: check_health
+            value: "true"
+
+    # Step 7: Send deployment completed metric to DataDog
+    - - name: send-success-metric
+        templateRef:
+          name: datadog-statsd-template
+          template: send-metric
+        arguments:
+          parameters:
+          - name: METRIC_PATH
+            value: "cd.deployment.completed"
+          - name: METRIC_VALUE
+            value: "1"
+          - name: METRIC_TYPE
+            value: "c"
+          - name: METRIC_TAGS
+            value: "project:{{inputs.parameters.project_name}},branch:{{inputs.parameters.project_branch}},stage:{{inputs.parameters.promotion_stage}},build_tag:{{inputs.parameters.build_tag}}"
+
+    # # Step 8: Cleanup ApplicationSets after deployment (unless skip_cleanup is true)
+    # - - name: cleanup-appset
+    #     when: "'{{inputs.parameters.skip_cleanup}}' != 'true'"
+    #     templateRef:
+    #       name: argocd-cli-template
+    #       template: delete-appset
+    #     arguments:
+    #       parameters:
+    #       - name: argocd_env
+    #         value: "{{inputs.parameters.argocd_env}}"
+    #       - name: project_name
+    #         value: "{{inputs.parameters.project_name}}"
+    #       - name: promotion_stage
+    #         value: "{{inputs.parameters.promotion_stage}}"
+    #       - name: appset_file
+    #         value: "{{steps.generate-combinations.outputs.parameters.appset_file}}"
+  
+
+  ################################################
+  # UTILITY TEMPLATES
+  ################################################
+
+
+  # The generate-deploy-combinations template is responsible for analyzing the ApplicationSet configuration 
+  # and generating deployment combinations for the promotion workflow.
+  - name: generate-deploy-combinations
+    inputs:
+      parameters:
+      - name: promotion_stage
+      - name: project_name
+      - name: project_branch
+        value: ""
+      - name: enable_variant_configs
+        value: "false"
+      - name: debug
+        value: "false"
+        description: "Enable debug output (true/false)"
+    retryStrategy:
+      limit: 3
+      backoff:
+        duration: "30s"
+        factor: 2
+        maxDuration: "5m"
+      retryPolicy: "OnError"
+    outputs:
+      parameters:
+      - name: combinations
+        valueFrom:
+          path: /tmp/combinations.json
+      - name: appset_file
+        valueFrom:
+          path: /tmp/appset_file
+    container:
+      image: alpine:3.18
+      command: [sh, -c]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      args:
+        - |
+          set -e
+
+          # --- deps ---
+          apk add --no-cache yq jq >/dev/null
+
+          # --- inputs ---
+          PROJECT="{{inputs.parameters.project_name}}"
+          ## HACK ##
+          PROJECT_PATH="/workspace/cd-deploy-configs/_apps/${PROJECT}"
+          PROMOTION_STAGE="{{inputs.parameters.promotion_stage}}"
+          BRANCH="{{inputs.parameters.project_branch}}"
+          ENABLE_VARIANT="{{inputs.parameters.enable_variant_configs}}"
+          DEBUG="{{inputs.parameters.debug}}"
+
+          # --- helpers ---
+          # - err():  error  (stderr, always visible)
+          # - info(): status (stderr, always visible, bypasses debug gate)
+          err()  { echo "ERROR: $*" >&2; }
+          info() { echo "INFO:  $*" >&2; }
+
+          # Gate all stdout behind debug flag (stderr is untouched, so info()/err() still show)
+          if [ "$DEBUG" != "true" ]; then
+            exec 1>/dev/null
+          fi
+
+          require_nonempty() {
+            local name="$1" val="$2"
+            if [ -z "${val}" ]; then
+              err "Missing required parameter: ${name}"
+              exit 1
+            fi
+          }
+
+          # --- validate required inputs ---
+          require_nonempty "project_name" "${PROJECT}"
+          require_nonempty "promotion_stage" "${PROMOTION_STAGE}"
+
+          if [ ! -d "${PROJECT_PATH}" ]; then
+            err "Project path not found: ${PROJECT_PATH}"
+            exit 1
+          fi
+
+          # --- determine variant behavior once ---
+          is_non_main_branch=false
+          if [ -n "${BRANCH}" ] && [ "${BRANCH}" != "main" ] && [ "${BRANCH}" != "master" ]; then
+            is_non_main_branch=true
+          fi
+
+          use_variant_file=false
+          if [ "${ENABLE_VARIANT}" = "true" ] && [ "${is_non_main_branch}" = "true" ]; then
+            use_variant_file=true
+          fi
+
+          # --- select ApplicationSet file ---
+          DEFAULT_APPSET_FILE="${PROJECT_PATH}/release-configs/${PROJECT}-${PROMOTION_STAGE}.yaml"
+          APPSET_FILE="${DEFAULT_APPSET_FILE}"
+
+          if [[ "${use_variant_file}" == "true" ]]; then
+            VARIANT_APPSET_FILE="${PROJECT_PATH}/release-configs/${PROJECT}-${PROMOTION_STAGE}-${BRANCH}.yaml"
+            if [ -f "${VARIANT_APPSET_FILE}" ]; then
+              APPSET_FILE="${VARIANT_APPSET_FILE}"
+              info "Using variant ApplicationSet file: ${APPSET_FILE}"
+            else
+              echo "Variant ApplicationSet file not found: ${VARIANT_APPSET_FILE} (falling back to default)"
+            fi
+          fi
+
+          info "Looking for ApplicationSet file: ${APPSET_FILE}"
+          if [ ! -f "${APPSET_FILE}" ]; then
+            err "ApplicationSet file not found: ${APPSET_FILE}"
+            exit 1
+          fi
+          echo "Found ApplicationSet file: ${APPSET_FILE}"
+
+          APP_NAME_PREFIX="${PROJECT}-${PROMOTION_STAGE}"
+          BRANCH_SUFFIX=""
+          if [ "${use_variant_file}" = "true" ]; then
+            BRANCH_SUFFIX="-${BRANCH}"
+          fi
+
+          # --- extract datacenters (as an array) ---
+          # This targets: .spec.generators[].clusters.selector.matchExpressions[] where key == "datacenter"
+          datacenters=$(
+            yq -r '.spec.generators[]? | select(has("clusters")) | .clusters.selector.matchExpressions[]? | select(.key == "datacenter") | .values[]?' "${APPSET_FILE}" \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u
+          )
+
+          if [ -z "$datacenters" ]; then
+            err "No datacenters found for promotion stage '${PROMOTION_STAGE}' in '${APPSET_FILE}'"
+            exit 1
+          fi
+
+          # --- outputs ---
+          COMBINATIONS_JSON="$(mktemp)"
+          APPSET_FILE_OUT="$(mktemp)"
+          trap "rm -f ${COMBINATIONS_JSON} ${APPSET_FILE_OUT}" EXIT
+
+          # Export variables for jq
+          export PROMOTION_STAGE APP_NAME_PREFIX BRANCH_SUFFIX APPSET_FILE
+
+          # Build JSON safely with jq
+          echo "$datacenters" | jq -R -s "split(\"\n\") | map(select(length > 0)) | .[] | { datacenter: ., environment: env.PROMOTION_STAGE, app_name: (env.APP_NAME_PREFIX + \"-\" + . + env.BRANCH_SUFFIX), appset_file: env.APPSET_FILE }" | jq -s "." > "${COMBINATIONS_JSON}"
+
+
+          # Output the selected appset_file for downstream steps
+          printf '%s' "${APPSET_FILE}" > "${APPSET_FILE_OUT}"
+          info "Using ApplicationSet file: ${APPSET_FILE}"
+
+          info "Generated combinations:"
+          cat "${COMBINATIONS_JSON}" >&2
+
+
+          # If your workflow expects these exact paths, copy them:
+          cp "${COMBINATIONS_JSON}" /tmp/combinations.json
+          cp "${APPSET_FILE_OUT}" /tmp/appset_file
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+
+
+  # The validate-standards template validates the project structure and configuration files
+  - name: validate-standards
+    inputs:
+      parameters:
+      - name: project_name
+      - name: environment
+      - name: datacenter
+      - name: promotion_stage
+      - name: project_branch
+        value: ""
+      - name: enable_variant_configs
+        value: "false"
+      - name: debug
+        value: "false"
+        description: "Enable debug output (true/false)"
+    retryStrategy:
+      limit: 3
+      backoff:
+        duration: "30s"
+        factor: 2
+        maxDuration: "5m"
+      retryPolicy: "OnError"
+    container:
+      image: admarketplace/amp-kustomize:5
+      command: [bash, -c]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 250Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      args:
+        - |
+          set -euo pipefail
+
+          # --- helpers ---
+          # - err():  error  (stderr, always visible)
+          # - info(): status (stderr, always visible, bypasses debug gate)
+          err()  { echo "ERROR: $*" >&2; }
+          info() { echo "INFO:  $*" >&2; }
+
+          # Gate all stdout behind debug flag (stderr is untouched, so info()/err() still show)
+          DEBUG="{{inputs.parameters.debug}}"
+          if [ "$DEBUG" != "true" ]; then
+            exec 1>/dev/null
+          fi
+
+          # Error handler
+          error_exit() {
+            echo "" >&2
+            echo "❌ VALIDATION FAILED: $1" >&2
+            echo "════════════════════════════════════════════════════════════" >&2
+            exit 1
+          }
+          
+          PROJECT="{{inputs.parameters.project_name}}"
+          ENVIRONMENT="{{inputs.parameters.environment}}"
+          DATACENTER="{{inputs.parameters.datacenter}}"
+          PROMOTION_STAGE="{{inputs.parameters.promotion_stage}}"
+          BRANCH="{{inputs.parameters.project_branch}}"
+          ENABLE_VARIANT="{{inputs.parameters.enable_variant_configs}}"
+          ## HACK ##
+          PROJECT_PATH="/workspace/cd-deploy-configs/_apps/${PROJECT}"
+          
+          echo "════════════════════════════════════════════════════════════"
+          echo "VALIDATION STARTED"
+          echo "════════════════════════════════════════════════════════════"
+          echo "Input Parameters:"
+          echo "  project_name: ${PROJECT}"
+          echo "  environment: ${ENVIRONMENT}"
+          echo "  datacenter: ${DATACENTER}"
+          echo "  promotion_stage: ${PROMOTION_STAGE}"
+          echo "  project_branch: ${BRANCH:-<empty>}"
+          echo "  enable_variant_configs: ${ENABLE_VARIANT}"
+          echo "  project_path: ${PROJECT_PATH}"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+          
+          # Helper functions
+          check_dir() {
+            local path="$1"
+            local desc="$2"
+            echo "Checking: ${desc}"
+            if [ -d "$path" ]; then
+              echo "  ✓ EXISTS: ${path}"
+            else
+              echo "  ✗ NOT FOUND: ${path}" >&2
+              echo "" >&2
+              echo "Directory listing of parent:" >&2
+              ls -la "$(dirname "$path")" 2>&1 || echo "Parent directory does not exist" >&2
+              error_exit "${desc} does not exist: ${path}"
+            fi
+          }
+          
+          check_file() {
+            local path="$1"
+            local desc="$2"
+            echo "Checking: ${desc}"
+            if [ -f "$path" ]; then
+              echo "  ✓ EXISTS: ${path}"
+            else
+              echo "  ✗ NOT FOUND: ${path}" >&2
+              echo "" >&2
+              echo "Directory contents:" >&2
+              ls -la "$(dirname "$path")" 2>&1 || echo "Parent directory does not exist" >&2
+              error_exit "${desc} does not exist: ${path}"
+            fi
+          }
+          
+          # 1. Check workspace exists
+          echo "Step 1: Checking workspace..."
+          if [ ! -d "/workspace/cd-deploy-configs" ]; then
+            echo "  ✗ Workspace not found!" >&2
+            echo "Workspace contents:" >&2
+            ls -la /workspace/ 2>&1
+            error_exit "cd-deploy-configs not cloned to workspace"
+          fi
+          echo "  ✓ Workspace exists"
+          echo ""
+          
+          # 2. Check cd-deploy-configs/$project_name dir exists
+          echo "Step 2: Checking project directory..."
+          check_dir "${PROJECT_PATH}" "Project directory"
+          echo ""
+          
+          # 3. Check release-configs dir exists
+          echo "Step 3: Checking release-configs directory..."
+          check_dir "${PROJECT_PATH}/release-configs" "Release configs directory"
+          echo ""
+          
+          # 4. Check env dir exists
+          echo "Step 4: Checking env directory..."
+          check_dir "${PROJECT_PATH}/env" "Variant directory"
+          echo ""
+          
+          # 5. Check release config file based on variant settings
+          echo "Step 5: Checking release config file..."
+          if [ "${ENABLE_VARIANT}" = "true" ] && [ -n "${BRANCH}" ] && [ "${BRANCH}" != "main" ] && [ "${BRANCH}" != "master" ]; then
+            RELEASE_FILE="${PROJECT_PATH}/release-configs/${PROJECT}-${PROMOTION_STAGE}-${BRANCH}.yaml"
+            echo "  Using variant config (stage: ${PROMOTION_STAGE}, branch: ${BRANCH})"
+            check_file "${RELEASE_FILE}" "Variant release config file"
+          else
+            RELEASE_FILE="${PROJECT_PATH}/release-configs/${PROJECT}-${PROMOTION_STAGE}.yaml"
+            echo "  Using default config (stage: ${PROMOTION_STAGE})"
+            check_file "${RELEASE_FILE}" "Default release config file"
+          fi
+          echo ""
+          
+          # 6. Check specific env directory for this combination
+          echo "Step 6: Checking variant directory for ${ENVIRONMENT}-${DATACENTER}..."
+          
+          # Build env directory path based on variant settings
+          BASE_ENV_DIR="${PROJECT_PATH}/env/${ENVIRONMENT}-${DATACENTER}"
+          if [ "${ENABLE_VARIANT}" = "true" ] && [ -n "${BRANCH}" ] && [ "${BRANCH}" != "main" ] && [ "${BRANCH}" != "master" ]; then
+            ENV_DIR="${BASE_ENV_DIR}-${BRANCH}"
+            echo "  Checking variant env directory: ${ENV_DIR}"
+          else
+            ENV_DIR="${BASE_ENV_DIR}"
+            echo "  Checking env directory: ${ENV_DIR}"
+          fi
+          
+          check_dir "${ENV_DIR}" "Variant directory for ${ENVIRONMENT}-${DATACENTER}"
+          echo ""
+          
+          # 7. Validate kustomize build works
+          echo "════════════════════════════════════════════════════════════"
+          echo "KUSTOMIZE BUILD VALIDATION"
+          echo "════════════════════════════════════════════════════════════"
+          
+          # Verify kustomize is available
+          if ! command -v kustomize >/dev/null 2>&1; then
+            error_exit "kustomize command not found in PATH"
+          fi
+          echo "Kustomize version: $(kustomize version --short 2>&1 || kustomize version 2>&1)"
+          echo ""
+          
+          # Check dev-ric1 env directory
+          echo "Building variant directory: ${ENV_DIR}..."
+          if [ -f "${ENV_DIR}/kustomization.yaml" ] || [ -f "${ENV_DIR}/kustomization.yml" ]; then
+            BUILD_OUTPUT=$(mktemp)
+            if kustomize build "${ENV_DIR}" > "$BUILD_OUTPUT" 2>&1; then
+              echo "  ✓ Variant directory kustomize build successful"
+            else
+              echo "  ✗ Variant directory kustomize build FAILED" >&2
+              echo "" >&2
+              echo "Kustomize build output:" >&2
+              cat "$BUILD_OUTPUT" >&2
+              rm -f "$BUILD_OUTPUT"
+              error_exit "Variant directory kustomize build failed"
+            fi
+            rm -f "$BUILD_OUTPUT"
+          else
+            echo "  ⚠ Skipping: no kustomization file found"
+          fi
+          echo ""
+          
+          echo "════════════════════════════════════════════════════════════"
+          echo "✅ ALL VALIDATION CHECKS PASSED!"
+          echo "════════════════════════════════════════════════════════════"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  # Update kustomize image tags (replaces Kargo promotion)
+  - name: update-kustomize-image
+    inputs:
+      parameters:
+      - name: project_name
+      - name: environment
+      - name: datacenter
+      - name: build_tag
+      - name: project_branch
+        value: ""
+      - name: enable_variant_configs
+        value: "false"
+      - name: debug
+        value: "false"
+        description: "Enable debug output (true/false)"
+    retryStrategy:
+      limit: 3
+      backoff:
+        duration: "30s"
+        factor: 2
+        maxDuration: "5m"
+      retryPolicy: "OnError"
+    container:
+      image: admarketplace/amp-kustomize:5
+      command: [bash, -c]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      args:
+        - |
+          set -euo pipefail
+
+          # --- helpers ---
+          # - err():  error  (stderr, always visible)
+          # - info(): status (stderr, always visible, bypasses debug gate)
+          err()  { echo "ERROR: $*" >&2; }
+          info() { echo "INFO:  $*" >&2; }
+
+          # Gate all stdout behind debug flag (stderr is untouched, so info()/err() still show)
+          DEBUG="{{inputs.parameters.debug}}"
+          if [ "$DEBUG" != "true" ]; then
+            exec 1>/dev/null
+          fi
+
+          PROJECT="{{inputs.parameters.project_name}}"
+          ENVIRONMENT="{{inputs.parameters.environment}}"
+          DATACENTER="{{inputs.parameters.datacenter}}"
+          BUILD_TAG="{{inputs.parameters.build_tag}}"
+          BRANCH="{{inputs.parameters.project_branch}}"
+          ENABLE_VARIANT="{{inputs.parameters.enable_variant_configs}}"
+          ## HACK ##
+          PROJECT_PATH="/workspace/cd-deploy-configs/_apps/${PROJECT}"
+          
+          echo "════════════════════════════════════════════════════════════"
+          echo "UPDATING KUSTOMIZE IMAGE TAG"
+          echo "════════════════════════════════════════════════════════════"
+          echo "Project: ${PROJECT}"
+          echo "Environment: ${ENVIRONMENT}"
+          echo "Datacenter: ${DATACENTER}"
+          echo "Build Tag: ${BUILD_TAG}"
+          
+          # Determine env path based on variant config
+          BASE_ENV_PATH="${PROJECT_PATH}/env/${ENVIRONMENT}-${DATACENTER}"
+          if [ "${ENABLE_VARIANT}" = "true" ] && [ -n "${BRANCH}" ] && [ "${BRANCH}" != "main" ] && [ "${BRANCH}" != "master" ]; then
+            ENV_PATH="${BASE_ENV_PATH}-${BRANCH}"
+          else
+            ENV_PATH="${BASE_ENV_PATH}"
+          fi
+          
+          echo "Variant path: ${ENV_PATH}"
+          
+          if [ ! -d "${ENV_PATH}" ]; then
+            err "Variant directory not found: ${ENV_PATH}"
+            exit 1
+          fi
+          
+          cd "${ENV_PATH}"
+          
+          # Check if kustomization file exists
+          if [ ! -f "kustomization.yaml" ] && [ ! -f "kustomization.yml" ]; then
+            err "No kustomization file found in ${ENV_PATH}"
+            exit 1
+          fi
+          
+          echo "Updating image tag for ${PROJECT} to ${BUILD_TAG}"
+          
+          # Use kustomize edit to set the image tag with full registry path
+          FULL_IMAGE_NAME="admarketplace/${PROJECT}"
+          kustomize edit set image "${FULL_IMAGE_NAME}:${BUILD_TAG}"
+          
+          echo "✓ Image tag updated successfully"
+          echo ""
+          echo "Updated kustomization.yaml:"
+          cat kustomization.yaml
+          echo "════════════════════════════════════════════════════════════"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  # The cleanup-failed-promotion template is responsible for cleaning up the failed promotion workflow.
+  - name: cleanup-failed-promotion
+    inputs:
+      parameters:
+      - name: project_name
+      - name: argocd_env
+      - name: promotion_stage
+      - name: enable_variant_configs
+        value: "false"
+      - name: project_branch
+        value: ""
+      - name: debug
+        value: "false"
+        description: "Enable debug output (true/false)"
+    retryStrategy:
+      limit: 3
+      backoff:
+        duration: "30s"
+        factor: 2
+        maxDuration: "5m"
+      retryPolicy: "OnError"
+    outputs:
+      parameters:
+      - name: cleanup_apps
+        valueFrom:
+          path: /tmp/cleanup_apps.json
+    container:
+      image: alpine:3.18
+      command: [sh, -c]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      args:
+        - |
+          set -e
+
+          # --- helpers ---
+          # - err():  error  (stderr, always visible)
+          # - info(): status (stderr, always visible, bypasses debug gate)
+          err()  { echo "ERROR: $*" >&2; }
+          info() { echo "INFO:  $*" >&2; }
+
+          # Gate all stdout behind debug flag (stderr is untouched, so info()/err() still show)
+          DEBUG="{{inputs.parameters.debug}}"
+          if [ "$DEBUG" != "true" ]; then
+            exec 1>/dev/null
+          fi
+
+          echo "=== CLEANUP: Checking if workflow failed ==="
+          
+          # Only cleanup if workflow failed
+          if [ "{{workflow.status}}" = "Succeeded" ]; then
+            echo "Workflow succeeded, no cleanup needed"
+            exit 0
+          fi
+          
+          echo "Workflow failed with status: {{workflow.status}}"
+          echo "=== CLEANUP: Deleting ArgoCD apps ==="
+          
+          # Re-generate combinations using manifest
+          ## HACK ##
+          MANIFEST_PATH="/workspace/cd-deploy-configs/_apps/{{inputs.parameters.project_name}}/env/{{inputs.parameters.promotion_stage}}/argocd-applicationset.yaml"
+          generate_list() {
+            local key="$1"
+            if [ -f "$MANIFEST_PATH" ]; then
+              yq -r ".spec.generators[]? | select(.clusters) | .clusters.selector.matchExpressions[]? | select(.key==\"$key\") | .values[]?" "$MANIFEST_PATH" 2>/dev/null | sort -u | grep -v '^$'
+            fi
+          }
+
+          DC_ARRAY=$(generate_list datacenter)
+
+          if [ -z "$DC_ARRAY" ]; then
+            echo "No datacenters found for cleanup." >&2
+            exit 0
+          fi
+          
+          # Determine app name prefix based on variant configs
+          APP_PREFIX="{{inputs.parameters.project_name}}-{{inputs.parameters.promotion_stage}}"
+          BRANCH_SUFFIX=""
+          if [ "{{inputs.parameters.enable_variant_configs}}" = "true" ] && [ -n "{{inputs.parameters.project_branch}}" ] && [ "{{inputs.parameters.project_branch}}" != "main" ] && [ "{{inputs.parameters.project_branch}}" != "master" ]; then
+            BRANCH_SUFFIX="-{{inputs.parameters.project_branch}}"
+          fi
+          
+          echo "[" > /tmp/cleanup_apps.json
+          first=true
+          
+          for dc in $DC_ARRAY; do
+            dc=$(echo "$dc" | xargs)
+            if [ -z "$dc" ]; then
+              continue
+            fi
+            if [ "$first" = true ]; then
+              first=false
+            else
+              echo "," >> /tmp/cleanup_apps.json
+            fi
+            echo "{\"argocd_app_name\": \"${APP_PREFIX}-${dc}${BRANCH_SUFFIX}\"}" >> /tmp/cleanup_apps.json
+          done
+          
+          echo "]" >> /tmp/cleanup_apps.json
+          echo "Generated cleanup apps:"
+          cat /tmp/cleanup_apps.json
+    volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  # The cleanup-delete-apps template is responsible for deleting the ArgoCD apps during cleanup.
+  - name: cleanup-delete-apps
+    steps:
+    - - name: generate-cleanup-combinations
+        template: generate-deploy-combinations
+        arguments:
+          parameters:
+          - name: project_name
+            value: "{{workflow.parameters.project_name}}"
+          - name: promotion_stage
+            value: "{{workflow.parameters.promotion_stage}}"
+          - name: project_branch
+            value: "{{workflow.parameters.project_branch}}"
+          - name: enable_variant_configs
+            value: "{{workflow.parameters.enable_variant_configs}}"
+    - - name: delete-appset
+        when: "{{workflow.parameters.skip_cleanup}} == 'false'"
+        withParam: "{{steps.generate-cleanup-combinations.outputs.parameters.combinations}}"
+        templateRef:
+          name: argocd-cli-template
+          template: delete-appset
+        arguments:
+          parameters:
+          - name: argocd_env
+            value: "{{workflow.parameters.argocd_env}}"
+          - name: project_name
+            value: "{{workflow.parameters.project_name}}"
+          - name: promotion_stage
+            value: "{{workflow.parameters.promotion_stage}}"
+          - name: appset_file
+            value: "{{item.appset_file}}"
+
+  # Exit handler: Send final metrics on workflow completion (success or failure)
+  - name: send-exit-metric
+    steps:
+    # Send status metric (Succeeded/Failed/Error)
+    - - name: send-status-metric
+        templateRef:
+          name: datadog-statsd-template
+          template: send-metric
+        arguments:
+          parameters:
+          - name: METRIC_PATH
+            value: "cd.deployment.{{workflow.status}}"
+          - name: METRIC_VALUE
+            value: "1"
+          - name: METRIC_TYPE
+            value: "c"
+          - name: METRIC_TAGS
+            value: "project:{{workflow.parameters.project_name}},branch:{{workflow.parameters.project_branch}},stage:{{workflow.parameters.promotion_stage}},build_tag:{{workflow.parameters.build_tag}},status:{{workflow.status}}"
+    
+    # Send duration metric (in seconds)
+    - - name: send-duration-metric
+        templateRef:
+          name: datadog-statsd-template
+          template: send-metric
+        arguments:
+          parameters:
+          - name: METRIC_PATH
+            value: "cd.deployment.duration"
+          - name: METRIC_VALUE
+            value: "{{workflow.duration}}"
+          - name: METRIC_TYPE
+            value: "h"
+          - name: METRIC_TAGS
+            value: "project:{{workflow.parameters.project_name}},branch:{{workflow.parameters.project_branch}},stage:{{workflow.parameters.promotion_stage}},build_tag:{{workflow.parameters.build_tag}},status:{{workflow.status}}"

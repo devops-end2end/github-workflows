@@ -1,84 +1,81 @@
-name: Deploy to Argo CD
+name: Deploy via Argo CD
 
 on:
   workflow_call:
     inputs:
-      image:
-        description: Docker image URI
+      PROJECT_NAME:
+        description: "Project name"
         required: true
         type: string
+
+      ENV:
+        description: "Environment"
+        required: true
+        type: string
+
+      DATACENTER:
+        description: "Datacenter"
+        required: true
+        type: string
+
     secrets:
+      ARGOCD_SERVER:
+        required: true
+
       ARGOCD_AUTH_TOKEN:
-        description: Argo CD authentication token
         required: true
 
 jobs:
   deploy:
-    runs-on: devops-end2end-runners
+    runs-on: temp-runner
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
       - name: Install Argo CD CLI
         run: |
-          if ! command -v argocd &> /dev/null; then
-            echo "Installing Argo CD CLI..."
-            curl -sSL -o /tmp/argocd \
-              https://github.com/argoproj/argo-cd/releases/download/v3.5.0/argocd-linux-amd64
+          curl -sSL -o argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
 
-            chmod +x /tmp/argocd
-            sudo mv /tmp/argocd /usr/local/bin/argocd
-          else
-            echo "Argo CD CLI is already installed on the runner."
-          fi
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/
 
-      - name: Debug Argo CD Auth
+      - name: Sync and verify Argo CD
         env:
-          ARGOCD_SERVER: "argocd-server.argocd.svc.cluster.local:80"
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+          ENV: ${{ inputs.ENV }}
+          DATACENTER: ${{ inputs.DATACENTER }}
         run: |
-          argocd account get-user-info \
-            --server "$ARGOCD_SERVER" \
-            --auth-token "$ARGOCD_AUTH_TOKEN" \
-            --plaintext \
-            --grpc-web
+          set -e
 
-      - name: Ensure Application Exists & Sync
-        env:
-          ARGOCD_SERVER: "argocd-server.argocd.svc.cluster.local:80"
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-          APP_NAME: "test1-app"
-          REPO_URL: "https://github.com/devops-end2end/test1.git"
-          MANIFEST_PATH: "k8s"
-          IMAGE: ${{ inputs.image }}
+          ARGO_OPTS="--server ${ARGOCD_SERVER} \
+            --auth-token ${ARGOCD_AUTH_TOKEN} \
+            --insecure \
+            --grpc-web"
 
-        run: |
-          if ! argocd app get "$APP_NAME" \
-            --server "$ARGOCD_SERVER" \
-            --auth-token "$ARGOCD_AUTH_TOKEN" \
-            --plaintext \
-            --grpc-web &>/dev/null; then
+          APP_NAME="argocd/${PROJECT_NAME}-${ENV}-${DATACENTER}"
 
-            echo "Application $APP_NAME does not exist. Creating..."
+          echo "========================================"
+          echo "Argo CD Deployment"
+          echo "========================================"
+          echo "Application: ${APP_NAME}"
+          echo "Environment: ${ENV}"
+          echo "Datacenter: ${DATACENTER}"
+          echo "========================================"
 
-            argocd app create "$APP_NAME" \
-              --repo "$REPO_URL" \
-              --path "$MANIFEST_PATH" \
-              --dest-server "https://kubernetes.default.svc" \
-              --dest-namespace "default" \
-              --project "default" \
-              --server "$ARGOCD_SERVER" \
-              --auth-token "$ARGOCD_AUTH_TOKEN" \
-              --plaintext \
-              --grpc-web
-          fi
+          echo "Refreshing Argo CD application..."
+          argocd app get "${APP_NAME}" ${ARGO_OPTS} --refresh
 
-          echo "Syncing $APP_NAME..."
-          echo "Image: $IMAGE"
+          echo "Syncing application..."
+          argocd app sync "${APP_NAME}" ${ARGO_OPTS}
 
-          argocd app sync "$APP_NAME" \
-            --server "$ARGOCD_SERVER" \
-            --auth-token "$ARGOCD_AUTH_TOKEN" \
-            --plaintext \
-            --grpc-web
+          echo "Waiting for application to become Synced and Healthy..."
+          argocd app wait "${APP_NAME}" ${ARGO_OPTS} \
+            --sync \
+            --health \
+            --timeout 600
+
+          echo "========================================"
+          echo "Deployment successful"
+          echo "Application: ${APP_NAME}"
+          echo "========================================"
