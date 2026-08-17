@@ -18,6 +18,10 @@ on:
         required: true
         type: string
 
+    secrets:
+      ARGOCD_AUTH_TOKEN:
+        required: true
+
 
 jobs:
   deploy:
