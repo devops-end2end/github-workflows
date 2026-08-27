@@ -47,7 +47,7 @@ jobs:
           echo "ecr_token=$TOKEN" >> $GITHUB_OUTPUT
 
   build-and-push: 
-    # runs-on: devops-end2end-runners
+    runs-on: devops-end2end-runners
     needs: ecr-auth
     outputs:
       image: ${{ steps.build-output.outputs.image }}      
