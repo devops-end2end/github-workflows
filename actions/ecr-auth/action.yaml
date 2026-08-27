@@ -22,6 +22,7 @@ runs:
   steps:
 
     - name: Install AWS CLI
+      shell: bash
       run: |
         sudo apt-get update && sudo apt-get install -y curl unzip
         curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -37,6 +38,7 @@ runs:
 
     - name: Get ECR Password
       id: ecr-token
+      shell: bash
       run: |
         TOKEN=$(aws ecr get-login-password --region ${{ inputs.aws-region }})
         echo "ecr_token=$TOKEN" >> $GITHUB_OUTPUT

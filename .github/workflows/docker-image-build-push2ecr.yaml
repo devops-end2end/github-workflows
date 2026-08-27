@@ -42,6 +42,7 @@ jobs:
 
       - name: Get ECR Password
         id: ecr-token
+        shell: bash
         run: |
           TOKEN=$(aws ecr get-login-password --region ${{ inputs.aws-region }})
           echo "ecr_token=$TOKEN" >> $GITHUB_OUTPUT
@@ -67,5 +68,6 @@ jobs:
 
       - name: Set Image Output
         id: build-output
+        shell: bash
         run: |
           echo "image=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
