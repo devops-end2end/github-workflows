@@ -56,21 +56,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # Create Docker credentials file directly in workspace
       - name: Configure Kaniko ECR Credentials
         shell: bash
         run: |
           mkdir -p ${{ github.workspace }}/.docker
           echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > ${{ github.workspace }}/.docker/config.json
 
-      - name: Run Kaniko Executor
-        uses: docker://gcr.io/kaniko-project/executor:v1.23.2-debug
-        with:
-          args: >-
-            --context=${{ github.workspace }}
-            --dockerfile=${{ github.workspace }}/Dockerfile
-            --destination=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}
-            --destination=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:latest
-            --destination=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.sha }}
+      # Run baked-in Kaniko executable
+      - name: Run Kaniko Build & Push
+        shell: bash
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.docker
+        run: |
+          /kaniko/executor \
+            --context="${{ github.workspace }}" \
+            --dockerfile="${{ github.workspace }}/Dockerfile" \
+            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" \
+            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:latest" \
+            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.sha }}" \
             --cache=true
 
       - name: Set Image Output
