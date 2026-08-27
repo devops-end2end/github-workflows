@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials via OIDC
-        uses: devops-end2end/github-workflows/actions/setup-aws/ecr-auth@main
+        uses: devops-end2end/github-workflows/.github/workflows/ecr-auth.yaml@main
         with:
           aws-region: ${{ inputs.aws-region }}
           role-to-assume: ${{ inputs.role-to-assume }}
