@@ -1,14 +1,16 @@
 name: "Setup AWS & ECR"
 description: "Configures AWS credentials via OIDC and logs into Amazon ECR"
 
-inputs:
-  aws-region:
-    description: "AWS Region"
-    required: true
-  role-to-assume:
-  
-    description: "IAM Role ARN to assume via OIDC"
-    required: true
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        description: "AWS Region"
+        required: true
+      role-to-assume:
+        description: "IAM Role ARN to assume via OIDC"
+        required: true
 
 outputs:
   ecr-registry:
