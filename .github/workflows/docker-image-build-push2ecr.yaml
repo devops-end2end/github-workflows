@@ -57,10 +57,10 @@ jobs:
           uses: actions/checkout@v4
 
         - name: Configure Kaniko ECR Credentials
-                shell: bash
-                run: |
-                  mkdir -p $HOME/.docker
-                  echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > $HOME/.docker/config.json
+          shell: bash
+          run: |
+            mkdir -p $HOME/.docker
+            echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > $HOME/.docker/config.json
 
         - name: Run Kaniko Build & Push
           shell: bash
