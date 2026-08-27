@@ -45,6 +45,7 @@ jobs:
 
       - name: Build, Tag, and Push Docker Image
         id: build
+        uses: aevea/action-kaniko@master
         env:
           ECR_REGISTRY: ${{ steps.ecr-auth.outputs.ecr-registry }}
           ECR_REPOSITORY: ${{ inputs.ecr-repository }}
