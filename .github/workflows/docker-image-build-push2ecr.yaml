@@ -27,15 +27,12 @@ permissions:
   contents: read    # Required to checkout the code
 
 jobs:
-  build-and-push: 
+  ecr-auth:
     runs-on: devops-end2end-runners
     outputs:
-      image: ${{ steps.build.outputs.image }}
-      
+      ecr_token: ${{ steps.ecr-token.outputs.ecr_token }}
+      ecr-registry: ${{ steps.ecr-auth.outputs.ecr-registry }}
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
       - name: Configure AWS Credentials via OIDC
         id: ecr-auth
         uses: devops-end2end/github-workflows/actions/ecr-auth@main
@@ -43,17 +40,32 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
           role-to-assume: ${{ inputs.role-to-assume }}
 
-      - name: Build, Tag, and Push Docker Image
-        id: build
-        uses: aevea/action-kaniko@master
-        env:
-          ECR_REGISTRY: ${{ steps.ecr-auth.outputs.ecr-registry }}
-          ECR_REPOSITORY: ${{ inputs.ecr-repository }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Get ECR Password
+        id: ecr-token
         run: |
-          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          TOKEN=$(aws ecr get-login-password --region ${{ inputs.aws-region }})
+          echo "ecr_token=$TOKEN" >> $GITHUB_OUTPUT
 
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+  build-and-push: 
+    runs-on: devops-end2end-runners
+    needs: ecr-auth
+    outputs:
+      image: ${{ steps.build-output.outputs.image }}      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Build, Tag, and Push Docker Image
+        uses: aevea/action-kaniko@master
+        with:
+          registry: 932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
+          image: ${{ inputs.ecr-repository }}
+          username: AWS
+          password: ${{ needs.ecr-auth.outputs.ecr_token }}
+          cache: true
+          tag: ${{ github.run_number }}, latest, ${{ github.sha }}
+
+      - name: Set Image Output
+        id: build-output
+        run: |
+          echo "image=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
