@@ -50,24 +50,20 @@ jobs:
   build-and-push: 
       runs-on: devops-end2end-runners
       needs: ecr-auth
-      
-      # Executes directly inside the Kaniko debug container without needing /var/run/docker.sock
-      container:
-        image: gcr.io/kaniko-project/executor:v1.23.2-debug
-
       outputs:
         image: ${{ steps.build-output.outputs.image }}      
-        
       steps:
         - name: Checkout Repository
           uses: actions/checkout@v4
 
         - name: Configure Kaniko ECR Credentials
+          shell: bash
           run: |
             mkdir -p /kaniko/.docker
             echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > /kaniko/.docker/config.json
 
-        - name: Build and Push Docker Image with Kaniko
+        - name: Run Kaniko Build & Push
+          shell: bash
           run: |
             /kaniko/executor \
               --context "${{ github.workspace }}" \
@@ -79,5 +75,6 @@ jobs:
 
         - name: Set Image Output
           id: build-output
+          shell: bash
           run: |
             echo "image=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
