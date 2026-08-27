@@ -1,4 +1,4 @@
-name: Build and Push to ECR
+name: Build Docker Image and Push to ECR
 
 on:
   workflow_call:
@@ -7,17 +7,28 @@ on:
         description: ECR repository name
         required: true
         type: string
+      role-to-assume:
+        description: AWS IAM Role ARN for OIDC
+        required: false
+        type: string
+        default: "arn:aws:iam::932399238655:role/github-actions-ecr-role"
+      aws-region:
+        description: AWS Region
+        required: false
+        type: string
+        default: "us-east-1"
     outputs:
       image:
         description: Docker image URI
         value: ${{ jobs.build-and-push.outputs.image }}
+
 permissions:
   id-token: write   # Required for requesting the OIDC JWT token
   contents: read    # Required to checkout the code
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: devops-end2end-runners
     
     outputs:
       image: ${{ steps.build.outputs.image }}
@@ -27,19 +38,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: devops-end2end/github-workflows/actions/setup-aws/ecr-auth@main
         with:
-          role-to-assume: arn:aws:iam::932399238655:role/github-actions-ecr-role
-          aws-region: us-east-1
-
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
 
       - name: Build, Tag, and Push Docker Image
         id: build
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.ecr-auth.outputs.ecr-registry }}
           ECR_REPOSITORY: ${{ inputs.ecr-repository }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
