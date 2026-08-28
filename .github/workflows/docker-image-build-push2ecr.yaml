@@ -63,20 +63,21 @@ jobs:
           mkdir -p ${{ github.workspace }}/.docker
           echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > ${{ github.workspace }}/.docker/config.json
 
-      # Run baked-in Kaniko executable
-      - name: Run Kaniko Build & Push
+
+      - name: Build and Push Docker Image
         shell: bash
         env:
           DOCKER_CONFIG: ${{ github.workspace }}/.docker
         run: |
-          /kaniko/executor \
-            --force \
-            --context="${{ github.workspace }}" \
-            --dockerfile="${{ github.workspace }}/Dockerfile" \
-            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" \
-            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:latest" \
-            --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.sha }}" \
-            --cache=true
+          REGISTRY="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          IMAGE_URI="$REGISTRY/${{ inputs.ecr-repository }}"
+          docker build -t $IMAGE_URI:${{ github.run_number }} \
+                       -t $IMAGE_URI:latest \
+                       -t $IMAGE_URI:${{ github.sha }} \
+                       .
+          docker push $IMAGE_URI:${{ github.run_number }}
+          docker push $IMAGE_URI:latest
+          docker push $IMAGE_URI:${{ github.sha }}
 
       - name: Set Image Output
         id: build-output
