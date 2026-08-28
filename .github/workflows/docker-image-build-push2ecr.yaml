@@ -27,57 +27,38 @@ permissions:
   contents: read
 
 jobs:
-  ecr-auth:
-    runs-on: devops-end2end-runners
-    outputs:
-      ecr_token: ${{ steps.ecr-token.outputs.ecr_token }}
-      ecr-registry: ${{ steps.ecr-auth.outputs.ecr-registry }}
-    steps:
-      - name: Configure AWS Credentials via OIDC
-        id: ecr-auth
-        uses: devops-end2end/github-workflows/actions/ecr-auth@main
-        with:
-          aws-region: ${{ inputs.aws-region }}
-          role-to-assume: ${{ inputs.role-to-assume }}
-
-      - name: Get ECR Password
-        id: ecr-token
-        shell: bash
-        run: |
-          TOKEN=$(aws ecr get-login-password --region ${{ inputs.aws-region }})
-          echo "ecr_token=$TOKEN" >> $GITHUB_OUTPUT
-
   build-and-push: 
     runs-on: devops-end2end-runners
-    needs: ecr-auth
     outputs:
       image: ${{ steps.build-output.outputs.image }}      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Create Docker credentials file directly in workspace
-      - name: Configure ECR Credentials
-        shell: bash
-        run: |
-          mkdir -p ${{ github.workspace }}/.docker
-          echo '{"auths":{"932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com":{"auth":"'$(echo -n "AWS:${{ needs.ecr-auth.outputs.ecr_token }}" | base64 -w 0)'"}}}' > ${{ github.workspace }}/.docker/config.json
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
 
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and Push Docker Image
         shell: bash
-        env:
-          DOCKER_CONFIG: ${{ github.workspace }}/.docker
         run: |
-          REGISTRY="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE_URI="$REGISTRY/${{ inputs.ecr-repository }}"
+
           docker build -t $IMAGE_URI:${{ github.run_number }} \
                        -t $IMAGE_URI:latest \
                        -t $IMAGE_URI:${{ github.sha }} \
                        .
+
           docker push $IMAGE_URI:${{ github.run_number }}
-          # docker push $IMAGE_URI:latest
-          # docker push $IMAGE_URI:${{ github.sha }}
+          docker push $IMAGE_URI:latest
+          docker push $IMAGE_URI:${{ github.sha }}
 
       - name: Set Image Output
         id: build-output
