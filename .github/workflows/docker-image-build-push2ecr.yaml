@@ -70,7 +70,7 @@ jobs:
           DOCKER_CONFIG: ${{ github.workspace }}/.docker
         run: |
           /kaniko/executor \
-            --unshare-namespaces \
+            --force \
             --context="${{ github.workspace }}" \
             --dockerfile="${{ github.workspace }}/Dockerfile" \
             --destination="932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" \
