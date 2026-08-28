@@ -76,8 +76,8 @@ jobs:
                        -t $IMAGE_URI:${{ github.sha }} \
                        .
           docker push $IMAGE_URI:${{ github.run_number }}
-          docker push $IMAGE_URI:latest
-          docker push $IMAGE_URI:${{ github.sha }}
+          # docker push $IMAGE_URI:latest
+          # docker push $IMAGE_URI:${{ github.sha }}
 
       - name: Set Image Output
         id: build-output
