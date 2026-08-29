@@ -7,6 +7,10 @@ on:
         description: "Project name (used for default app name/path generation)"
         required: false
         type: string
+      IMAGE:
+        description: "Complete container image reference"
+        required: true
+        type: string
       ENV:
         description: "Environment (used for default app name/path generation)"
         required: false
