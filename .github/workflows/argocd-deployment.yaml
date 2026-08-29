@@ -94,7 +94,7 @@ jobs:
 
       - name: sync-argocd-app
         run: |
-          set -e
+          set -euo pipefail
           APP_NAME="${{ inputs.PROJECT_NAME }}-${{ inputs.ENV }}-${{ inputs.DATACENTER }}"
           
           echo "Syncing ArgoCD app: $APP_NAME"
@@ -112,9 +112,9 @@ jobs:
 
       - name: wait-argocd-app
         run: |
-          APP_NAME="${{inputs.PROJECT_NAME}}-{{inputs.ENV}}-{{inputs.DATACENTER}}"
-          TIMEOUT="${{inputs.TIMEOUT}}"
-          CHECK_HEALTH="${{inputs.CHECK_HEALTH}}"
+          APP_NAME="${{ inputs.PROJECT_NAME }}-${{ inputs.ENV }}-${{ inputs.DATACENTER }}"
+          TIMEOUT="${{ inputs.TIMEOUT }}"
+          CHECK_HEALTH="${{ inputs.CHECK_HEALTH }}"
           HEALTH=""
           if [ "$CHECK_HEALTH" = "true" ]; then
             HEALTH="--health"
