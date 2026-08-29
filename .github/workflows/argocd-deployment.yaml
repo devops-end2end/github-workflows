@@ -37,6 +37,16 @@ on:
         required: false
         type: string
         default: "v3.5.2"
+      TIMEOUT:
+        description: "Timeout for ArgoCD app wait"
+        required: false
+        type: string
+        default: "60"
+      CHECK_HEALTH:
+        description: "Check ArgoCD app health"
+        required: false
+        type: string
+        default: "true"
     secrets:
       ARGOCD_AUTH_TOKEN:
         required: true
@@ -69,9 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           APPSET_PATH="${{ inputs.GITOPS_REPO || 'gitops' }}/${{ inputs.APPSET_PATH }}"
-          ls -lrth .  
-          pwd
-          find .
+
           if [ ! -f "$APPSET_PATH" ]; then
             echo "ERROR: ApplicationSet file not found: $APPSET_PATH"
             exit 1
@@ -84,53 +92,51 @@ jobs:
             --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web
           echo "ApplicationSet applied successfully"
 
-      # - name: sync-argocd-app
-      #   run: |
-      #     set -e
-      #     APP_NAME="{{inputs.parameters.argocd_app_name}}"
-      #     ARGO_SERVER="mgmt-{{inputs.parameters.argocd_env}}-argo.ric1.admarketplace.net:80"
+      - name: sync-argocd-app
+        run: |
+          set -e
+          APP_NAME="${{inputs.PROJECT_NAME}}-{{inputs.ENV}}-{{inputs.DATACENTER}}"
           
-      #     echo "Syncing ArgoCD app: $APP_NAME"
+          echo "Syncing ArgoCD app: $APP_NAME"
           
-      #     # Sync the app and check for errors
-      #     echo "Running argocd app sync..."
-      #     if ! argocd app sync "$APP_NAME" \
-      #       --server $ARGO_SERVER \
-      #       --plaintext --auth-token "$ARGOCD_TOKEN" --grpc-web; then
-      #       echo " ArgoCD app sync failed"
-      #       exit 1
-      #     fi
+          # Sync the app and check for errors
+          echo "Running argocd app sync..."
+          if ! argocd app sync "$APP_NAME" \
+            --server ${{ inputs.ARGOCD_SERVER }} \
+            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web; then
+            echo " ArgoCD app sync failed"
+            exit 1
+          fi
           
-      #     echo " ArgoCD app synced successfully"
+          echo " ArgoCD app synced successfully"
 
-      # - name: wait-argocd-app
-      #   run: |
-      #     APP_NAME="{{inputs.parameters.argocd_app_name}}"
-      #     ARGO_SERVER="mgmt-{{inputs.parameters.argocd_env}}-argo.ric1.admarketplace.net:80"
-      #     TIMEOUT="{{inputs.parameters.timeout}}"
-      #     CHECK_HEALTH="{{inputs.parameters.check_health}}"
-      #     HEALTH=""
-      #     if [ "$CHECK_HEALTH" = "true" ]; then
-      #       HEALTH="--health"
-      #     fi
+      - name: wait-argocd-app
+        run: |
+          APP_NAME="${{inputs.PROJECT_NAME}}-{{inputs.ENV}}-{{inputs.DATACENTER}}"
+          TIMEOUT="${{inputs.TIMEOUT}}"
+          CHECK_HEALTH="${{inputs.CHECK_HEALTH}}"
+          HEALTH=""
+          if [ "$CHECK_HEALTH" = "true" ]; then
+            HEALTH="--health"
+          fi
 
-      #     echo "Waiting for ArgoCD app sync: $APP_NAME"
-      #     echo "Timeout: $TIMEOUT seconds"
+          echo "Waiting for ArgoCD app sync: $APP_NAME"
+          echo "Timeout: $TIMEOUT seconds"
           
-      #     set +e
-      #     argocd app wait "$APP_NAME" \
-      #       --server $ARGO_SERVER \
-      #       --plaintext --auth-token "$ARGOCD_TOKEN" --grpc-web --sync $HEALTH --timeout "$TIMEOUT"
-      #     EXIT_CODE=$?
-      #     set -e
+          set +e
+          argocd app wait "$APP_NAME" \
+            --server ${{ inputs.ARGOCD_SERVER }} \
+            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web --sync $HEALTH --timeout "$TIMEOUT"
+          EXIT_CODE=$?
+          set -e
           
-      #     if [ $EXIT_CODE -ne 0 ]; then
-      #       echo "❌ ArgoCD app wait failed with exit code: $EXIT_CODE"
-      #       echo "App: $APP_NAME may have timed out or failed to sync"
-      #       exit $EXIT_CODE
-      #     fi
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ ArgoCD app wait failed with exit code: $EXIT_CODE"
+            echo "App: $APP_NAME may have timed out or failed to sync"
+            exit $EXIT_CODE
+          fi
           
-      #     echo "✓ ArgoCD app wait completed successfully"
+          echo "✓ ArgoCD app wait completed successfully"
 
       # - name: Ensure Application Exists and Sync
       #   env:
