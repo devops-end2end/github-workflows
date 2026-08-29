@@ -95,7 +95,7 @@ jobs:
       - name: sync-argocd-app
         run: |
           set -e
-          APP_NAME="${{inputs.PROJECT_NAME}}-{{inputs.ENV}}-{{inputs.DATACENTER}}"
+          APP_NAME="${{ inputs.PROJECT_NAME }}-${{ inputs.ENV }}-${{ inputs.DATACENTER }}"
           
           echo "Syncing ArgoCD app: $APP_NAME"
           
