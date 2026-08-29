@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       APPSET_PATH:
-        description: "Path to ApplicationSet manifest in GitOps repository"
+        description: "Path to single-env ApplicationSet manifest in GitOps repository"
         required: true
         type: string
       ARGOCD_SERVER:
@@ -82,7 +82,7 @@ jobs:
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: ${{ inputs.GITOPS_REPO }}
 
-      - name: Parse ApplicationSet & Update Image Tags
+      - name: Parse Single-Env ApplicationSet & Update Image Tags
         id: generate-matrix
         env:
           PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
@@ -97,10 +97,10 @@ jobs:
             exit 1
           fi
 
-          # Parse list elements from ApplicationSet using yq
+          # Extract target datacenters defined in this specific ApplicationSet file
           ELEMENTS_JSON=$(yq -o=json '.spec.generators[].list.elements' "$FULL_APPSET_PATH")
 
-          # Loop over all target combinations and update kustomization images
+          # Iterate over only the elements specified in this environment's AppSet
           echo "$ELEMENTS_JSON" | jq -c '.[]' | while read -r item; do
             ENV=$(echo "$item" | jq -r '.env')
             DC=$(echo "$item" | jq -r '.datacenter')
@@ -114,17 +114,18 @@ jobs:
             fi
           done
 
-          # Create JSON array of app names for GitHub Matrix Strategy
+          # Output dynamic application list for matrix deployment
           MATRIX_JSON=$(echo "$ELEMENTS_JSON" | jq -c --arg proj "$PROJECT_NAME" \
             'map({app_name: "\($proj)-\(.env)-\(.datacenter)"})')
 
-          echo "Generated Matrix: $MATRIX_JSON"
+          echo "Generated Matrix for AppSet ($APPSET_PATH): $MATRIX_JSON"
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
       - name: Commit and push manifest updates
         env:
           GITOPS_REPO: ${{ inputs.GITOPS_REPO }}
           PROJECT_NAME: ${{ inputs.PROJECT_NAME }}
+          APPSET_PATH: ${{ inputs.APPSET_PATH }}
         run: |
           cd "$GITOPS_REPO"
           git config user.name "github-actions[bot]"
@@ -135,7 +136,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Update ${PROJECT_NAME} image tags [skip ci]"
+            git commit -m "Update ${PROJECT_NAME} image tag for ${APPSET_PATH} [skip ci]"
             git push
           fi
 
@@ -208,4 +209,3 @@ jobs:
           fi
           
           echo "✓ ArgoCD app $APP_NAME wait completed successfully"
- 
