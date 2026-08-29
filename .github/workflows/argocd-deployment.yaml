@@ -30,6 +30,16 @@ on:
         required: false
         type: string
         default: "v3.5.2"
+      KUSTOMIZE_VERSION:
+        description: "Kustomize Version"
+        required: false
+        type: string
+        default: "5.4.1"
+      YQ_VERSION:
+        description: "yq Version"
+        required: false
+        type: string
+        default: "v4.40.5"
       TIMEOUT:
         description: "Timeout for ArgoCD app wait"
         required: false
@@ -55,13 +65,13 @@ jobs:
       - name: Install Required CLI Tools (yq, Kustomize, ArgoCD)
         run: |
           # yq
-          YQ_VERSION="v4.40.5"
+          YQ_VERSION="${{ inputs.YQ_VERSION }}"
           curl -sSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           chmod +x /tmp/yq
           sudo mv /tmp/yq /usr/local/bin/yq
 
           # Kustomize
-          KUSTOMIZE_VERSION="5.4.1"
+          KUSTOMIZE_VERSION="${{ inputs.KUSTOMIZE_VERSION }}"
           curl -sLO "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
           tar -xzf "kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
           chmod +x kustomize
@@ -97,10 +107,8 @@ jobs:
             exit 1
           fi
 
-          # Extract target datacenters defined in this specific ApplicationSet file
           ELEMENTS_JSON=$(yq -o=json '.spec.generators[].list.elements' "$FULL_APPSET_PATH")
 
-          # Iterate over only the elements specified in this environment's AppSet
           echo "$ELEMENTS_JSON" | jq -c '.[]' | while read -r item; do
             ENV=$(echo "$item" | jq -r '.env')
             DC=$(echo "$item" | jq -r '.datacenter')
@@ -114,7 +122,6 @@ jobs:
             fi
           done
 
-          # Output dynamic application list for matrix deployment
           MATRIX_JSON=$(echo "$ELEMENTS_JSON" | jq -c --arg proj "$PROJECT_NAME" \
             'map({app_name: "\($proj)-\(.env)-\(.datacenter)"})')
 
@@ -169,21 +176,51 @@ jobs:
             sudo mv argocd /usr/local/bin/
           fi
 
-      - name: Sync ArgoCD Application
+      - name: Wait for Application Existence & Sync ArgoCD Application
         run: |
           set -euo pipefail
           APP_NAME="${{ matrix.app.app_name }}"
           
-          echo "Syncing ArgoCD app: $APP_NAME"
-          if ! argocd app sync "$APP_NAME" \
+          # Step 1: Retry loop waiting for ApplicationSet controller to generate the Application
+          echo "Waiting for ArgoCD application '$APP_NAME' to be registered by ApplicationSet controller..."
+          MAX_RETRIES=12
+          RETRY_INTERVAL=5
+          count=0
+          
+          until argocd app get "$APP_NAME" \
             --server ${{ inputs.ARGOCD_SERVER }} \
-            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web; then
-            echo "❌ ArgoCD app sync failed for $APP_NAME"
-            exit 1
-          fi
+            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web >/dev/null 2>&1; do
+            count=$((count + 1))
+            if [ $count -ge $MAX_RETRIES ]; then
+              echo "❌ Timed out waiting for ArgoCD app '$APP_NAME' to exist."
+              exit 1
+            fi
+            echo "App '$APP_NAME' not found yet. Retrying in ${RETRY_INTERVAL}s... ($count/$MAX_RETRIES)"
+            sleep $RETRY_INTERVAL
+          done
+          
+          echo "✓ ArgoCD app '$APP_NAME' exists."
+
+          # Step 2: Sync with retry loop
+          echo "Syncing ArgoCD app: $APP_NAME"
+          SYNC_RETRIES=3
+          SYNC_COUNT=0
+          
+          until argocd app sync "$APP_NAME" \
+            --server ${{ inputs.ARGOCD_SERVER }} \
+            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web; do
+            SYNC_COUNT=$((SYNC_COUNT + 1))
+            if [ $SYNC_COUNT -ge $SYNC_RETRIES ]; then
+              echo "❌ ArgoCD app sync failed after $SYNC_RETRIES attempts"
+              exit 1
+            fi
+            echo "Sync command failed/rejected. Retrying in 10s... ($SYNC_COUNT/$SYNC_RETRIES)"
+            sleep 10
+          done
+          
           echo "✓ ArgoCD app $APP_NAME synced successfully"
 
-      - name: Wait for ArgoCD Application
+      - name: Wait for ArgoCD Application Health
         run: |
           set -euo pipefail
           APP_NAME="${{ matrix.app.app_name }}"
