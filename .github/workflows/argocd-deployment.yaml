@@ -15,11 +15,7 @@ on:
         description: "Datacenter (used for default app name/path generation)"
         required: false
         type: string
-      APP_NAME:
-        description: "Override target Argo CD application name"
-        required: false
-        type: string
-      APP_PATH:
+      APPSET_PATH:
         description: "Override path to manifests in GitOps repository"
         required: false
         type: string
@@ -28,20 +24,14 @@ on:
         required: false
         type: string
         default: "argocd-server.argocd.svc.cluster.local:80"
-      DEST_NAMESPACE:
-        description: "Target Kubernetes namespace"
+      GITOPS_REGISTRY:
+        description: "Git registry"
         required: false
         type: string
-      REPO_URL:
-        description: "Git repository containing Kubernetes manifests"
+      GITOPS_REPO:
+        description: "Git repository"
         required: false
         type: string
-        default: "https://github.com/devops-end2end/gitops.git"
-      TARGET_REVISION:
-        description: "Target Git branch, tag, or commit"
-        required: false
-        type: string
-        default: "HEAD"
       ARGOCD_CLI_VERSION:
         description: "Argo CD CLI Version"
         required: false
@@ -66,56 +56,128 @@ jobs:
             sudo mv argocd /usr/local/bin/
           fi
 
-      - name: Ensure Application Exists and Sync
-        env:
-          ARGOCD_SERVER: "${{ inputs.ARGOCD_SERVER }}"
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-          # Fallback logic: Use explicit APP_NAME/APP_PATH if provided, else construct from parameters
-          TARGET_APP_NAME: "${{ inputs.APP_NAME || format('{0}-{1}-{2}', inputs.PROJECT_NAME, inputs.ENV, inputs.DATACENTER) }}"
-          TARGET_APP_PATH: "${{ inputs.APP_PATH || format('{0}/env/{1}-{2}', inputs.PROJECT_NAME, inputs.ENV, inputs.DATACENTER) }}"
-          TARGET_NAMESPACE: "${{ inputs.DEST_NAMESPACE || inputs.ENV || 'default' }}"
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: devops-end2end/gitops
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: ${{ inputs.GITOPS_REPO || 'gitops' }}
+
+      - name: apply-appset
         run: |
           set -euo pipefail
-
-          ARGO_FLAGS="--server ${ARGOCD_SERVER} --auth-token ${ARGOCD_AUTH_TOKEN} --plaintext"
-
-          echo "========================================"
-          echo "Argo CD Deployment"
-          echo "========================================"
-          echo "Server      : ${ARGOCD_SERVER}"
-          echo "Application : ${TARGET_APP_NAME}"
-          echo "Path        : ${TARGET_APP_PATH}"
-          echo "Namespace   : ${TARGET_NAMESPACE}"
-          echo "========================================"
-
-          # Create application if missing, otherwise refresh state
-          if ! argocd app get "${TARGET_APP_NAME}" ${ARGO_FLAGS} &>/dev/null; then
-            echo "Application '${TARGET_APP_NAME}' does not exist. Creating..."
-
-            argocd app create "${TARGET_APP_NAME}" ${ARGO_FLAGS} \
-              --repo "${{ inputs.REPO_URL }}" \
-              --path "${TARGET_APP_PATH}" \
-              --dest-server "https://kubernetes.default.svc" \
-              --dest-namespace "${TARGET_NAMESPACE}" \
-              --revision "${{ inputs.TARGET_REVISION }}" \
-              --project default \
-              --sync-policy automated \
-              --auto-prune \
-              --self-heal
-          else
-            echo "Application '${TARGET_APP_NAME}' exists. Refreshing state from Git..."
-            argocd app get "${TARGET_APP_NAME}" ${ARGO_FLAGS} --refresh > /dev/null
+          APPSET_PATH="${{ inputs.GITOPS_REPO || 'gitops' }}/${{ inputs.APPSET_PATH }}"
+          
+          if [ ! -f "$APPSET_PATH" ]; then
+            echo "ERROR: ApplicationSet file not found: $APPSET_PATH"
+            exit 1
           fi
 
-          echo "Initiating Application Synchronization..."
-          argocd app sync "${TARGET_APP_NAME}" ${ARGO_FLAGS} --prune
+          echo "Applying ApplicationSet from: $APPSET_PATH"
+          argocd appset create "$APPSET_PATH" \
+            --upsert \
+            --server ${{ inputs.ARGOCD_SERVER }} \
+            --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web
+          echo "ApplicationSet applied successfully"
 
-          echo "Waiting for Sync & Health status (Timeout: 10m)..."
-          argocd app wait "${TARGET_APP_NAME}" ${ARGO_FLAGS} \
-            --sync \
-            --health \
-            --timeout 600
+      # - name: sync-argocd-app
+      #   run: |
+      #     set -e
+      #     APP_NAME="{{inputs.parameters.argocd_app_name}}"
+      #     ARGO_SERVER="mgmt-{{inputs.parameters.argocd_env}}-argo.ric1.admarketplace.net:80"
+          
+      #     echo "Syncing ArgoCD app: $APP_NAME"
+          
+      #     # Sync the app and check for errors
+      #     echo "Running argocd app sync..."
+      #     if ! argocd app sync "$APP_NAME" \
+      #       --server $ARGO_SERVER \
+      #       --plaintext --auth-token "$ARGOCD_TOKEN" --grpc-web; then
+      #       echo " ArgoCD app sync failed"
+      #       exit 1
+      #     fi
+          
+      #     echo " ArgoCD app synced successfully"
 
-          echo "========================================"
-          echo "Deployment successful!"
-          echo "========================================"
+      # - name: wait-argocd-app
+      #   run: |
+      #     APP_NAME="{{inputs.parameters.argocd_app_name}}"
+      #     ARGO_SERVER="mgmt-{{inputs.parameters.argocd_env}}-argo.ric1.admarketplace.net:80"
+      #     TIMEOUT="{{inputs.parameters.timeout}}"
+      #     CHECK_HEALTH="{{inputs.parameters.check_health}}"
+      #     HEALTH=""
+      #     if [ "$CHECK_HEALTH" = "true" ]; then
+      #       HEALTH="--health"
+      #     fi
+
+      #     echo "Waiting for ArgoCD app sync: $APP_NAME"
+      #     echo "Timeout: $TIMEOUT seconds"
+          
+      #     set +e
+      #     argocd app wait "$APP_NAME" \
+      #       --server $ARGO_SERVER \
+      #       --plaintext --auth-token "$ARGOCD_TOKEN" --grpc-web --sync $HEALTH --timeout "$TIMEOUT"
+      #     EXIT_CODE=$?
+      #     set -e
+          
+      #     if [ $EXIT_CODE -ne 0 ]; then
+      #       echo "❌ ArgoCD app wait failed with exit code: $EXIT_CODE"
+      #       echo "App: $APP_NAME may have timed out or failed to sync"
+      #       exit $EXIT_CODE
+      #     fi
+          
+      #     echo "✓ ArgoCD app wait completed successfully"
+
+      # - name: Ensure Application Exists and Sync
+      #   env:
+      #     ARGOCD_SERVER: "${{ inputs.ARGOCD_SERVER }}"
+      #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+      #     # Fallback logic: Use explicit APP_NAME/APP_PATH if provided, else construct from parameters
+      #     TARGET_APP_NAME: "${{ inputs.APP_NAME || format('{0}-{1}-{2}', inputs.PROJECT_NAME, inputs.ENV, inputs.DATACENTER) }}"
+      #     TARGET_APP_PATH: "${{ inputs.APP_PATH || format('{0}/env/{1}-{2}', inputs.PROJECT_NAME, inputs.ENV, inputs.DATACENTER) }}"
+      #     TARGET_NAMESPACE: "${{ inputs.DEST_NAMESPACE || inputs.ENV || 'default' }}"
+      #   run: |
+      #     set -euo pipefail
+
+      #     ARGO_FLAGS="--server ${ARGOCD_SERVER} --auth-token ${ARGOCD_AUTH_TOKEN} --plaintext"
+
+      #     echo "========================================"
+      #     echo "Argo CD Deployment"
+      #     echo "========================================"
+      #     echo "Server      : ${ARGOCD_SERVER}"
+      #     echo "Application : ${TARGET_APP_NAME}"
+      #     echo "Path        : ${TARGET_APP_PATH}"
+      #     echo "Namespace   : ${TARGET_NAMESPACE}"
+      #     echo "========================================"
+
+      #     # Create application if missing, otherwise refresh state
+      #     if ! argocd app get "${TARGET_APP_NAME}" ${ARGO_FLAGS} &>/dev/null; then
+      #       echo "Application '${TARGET_APP_NAME}' does not exist. Creating..."
+
+      #       argocd app create "${TARGET_APP_NAME}" ${ARGO_FLAGS} \
+      #         --repo "${{ inputs.REPO_URL }}" \
+      #         --path "${TARGET_APP_PATH}" \
+      #         --dest-server "https://kubernetes.default.svc" \
+      #         --dest-namespace "${TARGET_NAMESPACE}" \
+      #         --revision "${{ inputs.TARGET_REVISION }}" \
+      #         --project default \
+      #         --sync-policy automated \
+      #         --auto-prune \
+      #         --self-heal
+      #     else
+      #       echo "Application '${TARGET_APP_NAME}' exists. Refreshing state from Git..."
+      #       argocd app get "${TARGET_APP_NAME}" ${ARGO_FLAGS} --refresh > /dev/null
+      #     fi
+
+      #     echo "Initiating Application Synchronization..."
+      #     argocd app sync "${TARGET_APP_NAME}" ${ARGO_FLAGS} --prune
+
+      #     echo "Waiting for Sync & Health status (Timeout: 10m)..."
+      #     argocd app wait "${TARGET_APP_NAME}" ${ARGO_FLAGS} \
+      #       --sync \
+      #       --health \
+      #       --timeout 600
+
+      #     echo "========================================"
+      #     echo "Deployment successful!"
+      #     echo "========================================"
