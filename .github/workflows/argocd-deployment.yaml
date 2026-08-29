@@ -69,7 +69,9 @@ jobs:
         run: |
           set -euo pipefail
           APPSET_PATH="${{ inputs.GITOPS_REPO || 'gitops' }}/${{ inputs.APPSET_PATH }}"
-          
+          ls -lrth .  
+          pwd
+          find .
           if [ ! -f "$APPSET_PATH" ]; then
             echo "ERROR: ApplicationSet file not found: $APPSET_PATH"
             exit 1
