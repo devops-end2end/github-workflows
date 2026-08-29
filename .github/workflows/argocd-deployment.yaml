@@ -40,6 +40,8 @@ on:
     secrets:
       ARGOCD_AUTH_TOKEN:
         required: true
+      GITOPS_REPO_TOKEN:
+        required: true
 
 jobs:
   deploy:
