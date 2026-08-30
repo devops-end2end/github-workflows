@@ -1,0 +1,315 @@
+name: Python Build Pipeline
+
+on:
+  push:
+    branches: [ "main", "master", "develop", "feature/*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      py_version:
+        description: 'Python Version'
+        required: true
+        default: '3.11'
+        type: choice
+        options:
+          - '3.8'
+          - '3.9'
+          - '3.10'
+          - '3.11'
+          - '3.12'
+          - '3.13'
+      base_image:
+        description: 'Override base docker image (defaults to upstream python)'
+        required: false
+        type: string
+      aws_region:
+        description: 'AWS Region'
+        required: false
+        type: string
+        default: 'us-east-1'
+      disable_sonarqube:
+        description: 'Disable SonarQube Scan'
+        type: boolean
+        default: false
+      disable_snyk:
+        description: 'Disable Snyk Scan'
+        type: boolean
+        default: false
+
+env:
+  PY_VER: ${{ inputs.py_version || '3.11' }}
+  AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+  DISABLE_SONARQUBE: ${{ inputs.disable_sonarqube || false }}
+  DISABLE_SNYK: ${{ inputs.disable_snyk || false }}
+
+jobs:
+  # 1. Pipeline Initialization & Variable Setup
+  init:
+    runs-on: devops-end2end-runners
+    outputs:
+      project: ${{ steps.vars.outputs.PROJECT }}
+      version: ${{ steps.vars.outputs.VERSION }}
+      major_minor: ${{ steps.vars.outputs.MAJOR_MINOR_VER }}
+      base_image: ${{ steps.vars.outputs.BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Calculate Environment Variables
+        id: vars
+        shell: bash
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+          
+          MAJOR_MINOR=$(python setup.py --version)
+          BUILD_NUM="${GITHUB_RUN_NUMBER}"
+          
+          if [[ "$BRANCH_NAME" == "master" || "$BRANCH_NAME" == "main" ]]; then
+            VERSION="${MAJOR_MINOR}.${BUILD_NUM}"
+          else
+            VERSION="${MAJOR_MINOR}.${BUILD_NUM}-${BRANCH_NAME//\//-}"
+          fi
+          
+          # Determine base image - Use input if provided, otherwise default to upstream official python image
+          if [ -n "${{ inputs.base_image }}" ]; then
+            BASE_IMAGE="${{ inputs.base_image }}"
+          else
+            BASE_IMAGE="python:${PY_VER}"
+          fi
+          
+          echo "PROJECT=$REPO_NAME" >> $GITHUB_OUTPUT
+          echo "MAJOR_MINOR_VER=$MAJOR_MINOR" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_OUTPUT
+
+  # 2. Unit Tests
+  unit-tests:
+    needs: init
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Run Pytest
+        run: |
+          python -m venv /tmp/venv
+          source /tmp/venv/bin/activate
+          export PYTHONPATH="src/main/python:src/test/python"
+          
+          pip install -r requirements.txt pytest-cov
+          if [ -f test-requirements.txt ]; then
+            pip install -r test-requirements.txt
+          fi
+          
+          pytest src/test/python --cov=src/main/python --cov-report=term --cov-report xml:coverage.xml
+
+      - name: Upload Coverage Artifact
+        if: ${{ env.DISABLE_SONARQUBE == 'false' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # 3. SonarQube Scan (Conditional)
+  sonar-scan:
+    needs: [init, unit-tests]
+    if: ${{ inputs.disable_sonarqube == false && needs.init.outputs.disable_sonarqube != 'true' }}
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Coverage Report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarcloud-github-action@v3.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=admarketplace_${{ needs.init.outputs.project }}
+            -Dsonar.projectName=${{ needs.init.outputs.project }}
+            -Dsonar.projectVersion=${{ needs.init.outputs.version }}
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.sources=src/main/python
+            -Dsonar.organization=admarketplace
+
+  # 4. Snyk Scan (Conditional)
+  snyk-scan:
+    needs: [init, unit-tests]
+    if: ${{ inputs.disable_snyk == false && needs.init.outputs.disable_snyk != 'true' }}
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Snyk Security Scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          pip install snyk
+          snyk auth $SNYK_TOKEN
+          snyk test --file=requirements.txt
+
+  # 5. Build Packaging Artifacts and Push Docker Image to ECR
+  build-and-push:
+    needs: [init, unit-tests]
+    runs-on: devops-end2end-runners
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.build-output.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Package Application
+        run: |
+          mkdir -p libs/python target
+          pip install -r requirements.txt -t ./libs/python
+          
+          cp -rv src/main/* target/
+          [ -d confs ] && cp -r confs target/
+          [ -d scripts ] && cp -r scripts target/
+          
+          cd target
+          tar --exclude="__init__.py" -czvf "${{ needs.init.outputs.project }}-${{ needs.init.outputs.version }}.tar.gz" *
+          cd ..
+
+      - name: Ensure Dockerfile Exists
+        env:
+          PROJECT: ${{ needs.init.outputs.project }}
+          VERSION: ${{ needs.init.outputs.version }}
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "No local Dockerfile found. Baking default into the workspace..."
+            cat << "EOF" > Dockerfile
+          # Utilizing the dynamically injected BASE_IMAGE (defaults to upstream if not explicitly provided)
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+
+          ARG DESCRIPTION
+          ARG VERSION
+          LABEL com.admarketplace.maintainer=ci@admarketplace.com
+          LABEL com.admarketplace.description=${DESCRIPTION}
+          LABEL com.admarketplace.version=${VERSION}
+
+          LABEL com.datadoghq.tags.service=${PROJECT}
+          LABEL com.datadoghq.tags.version=${VERSION}
+          ENV DD_SERVICE ${PROJECT}
+          ENV DD_VERSION ${VERSION}
+
+          ARG USER=jobuser
+          ARG GROUP=ampdev
+          ARG PROJECT
+          ENV PYTHONPATH="/app/libs/python"
+          ENV PROJECT=${PROJECT}
+          ENV PROJECT_ACTIVE_DIR=/app
+          
+          # Cleaned up FROM prefix, and added groupadd/useradd to ensure compatibility when using standard upstream images
+          RUN find /etc/apt/sources.list.d/ -name '*.sources' -exec sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.mit.edu/ubuntu|g;s|http://security.ubuntu.com/ubuntu|http://mirrors.mit.edu/ubuntu|g' {} + 2>/dev/null || true && \
+              find /etc/apt/sources.list.d/ -iname '*deadsnakes*' -delete 2>/dev/null || true && \
+              rm -rf /var/lib/apt/lists/ppa.launchpadcontent.net* 2>/dev/null || true && \
+              apt-get update && apt-get install -y git && \
+              groupadd -f $GROUP || true && \
+              useradd -m -g $GROUP $USER || true
+
+          WORKDIR /app
+
+          CMD scripts/run.sh
+
+          RUN mkdir logs data
+          COPY libs libs
+          COPY target/${PROJECT}-${VERSION}.tar.gz .
+          RUN tar -xvf ${PROJECT}-${VERSION}.tar.gz && \
+              rm -f ${PROJECT}-${VERSION}.tar.gz && \
+              chmod +x /app/scripts/* && \
+              chown -R $USER:$GROUP /app/*
+          USER $USER
+          EOF
+          else
+            echo "Local Dockerfile found. Bypassing baked-in fallback."
+          fi
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::932399238655:role/github-actions-ecr-role"
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          PROJECT: ${{ needs.init.outputs.project }}
+          VERSION: ${{ needs.init.outputs.version }}
+          BASE_IMAGE: ${{ needs.init.outputs.base_image }}
+        run: |
+          IMAGE_URI="$REGISTRY/$PROJECT"
+
+          docker build . \
+            --tag $IMAGE_URI:$VERSION \
+            --tag $IMAGE_URI:latest \
+            --tag $IMAGE_URI:${{ github.sha }} \
+            --build-arg="PROJECT=$PROJECT" \
+            --build-arg="VERSION=$VERSION" \
+            --build-arg="BASE_IMAGE=$BASE_IMAGE" \
+            --build-arg="DESCRIPTION=$PROJECT"
+
+          docker push $IMAGE_URI:$VERSION
+          docker push $IMAGE_URI:latest
+          docker push $IMAGE_URI:${{ github.sha }}
+
+      - name: Set Image Output
+        id: build-output
+        shell: bash
+        run: |
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
+
+  # 6. Deploy to Environment (ArgoCD)
+  deploy-dev:
+    needs: [init, build-and-push]
+    runs-on: devops-end2end-runners
+    environment: Dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trigger ArgoCD Deployment
+        run: |
+          export PROJECT_NAME="${{ needs.init.outputs.project }}"
+          export PROMOTION_STAGE="dev"
+          export BUILD_TAG="${{ needs.init.outputs.version }}"
+          export PROJECT_BRANCH="${{ github.ref_name }}"
+          export IMAGE_URI="${{ needs.build-and-push.outputs.image }}"
+          
+          APPSET_FILE="$(argo-promote | tee /dev/stderr | tail -n1)"
+          export APPSET_FILE
+          argo-deploy
