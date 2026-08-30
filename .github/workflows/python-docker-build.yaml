@@ -20,11 +20,11 @@ on:
         disable_sonarqube:
           description: 'Disable SonarQube Scan'
           type: boolean
-          default: boolean
+          default: true
         disable_snyk:
           description: 'Disable Snyk Scan'
           type: boolean
-          default: boolean
+          default: true
       
   push:
     branches: [ "main", "master", "develop", "feature/*" ]
