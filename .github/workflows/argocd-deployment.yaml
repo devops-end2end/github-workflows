@@ -92,7 +92,7 @@ jobs:
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: ${{ inputs.GITOPS_REPO }}
 
-      - name: Parse Single-Env ApplicationSet & Update Image Tags
+      - name: Parse ApplicationSet & Update Image Tags
         id: generate-matrix
         env:
           PROJECT_NAME: ${{ inputs.PROJECT_NAME }}

@@ -25,6 +25,10 @@ on:
           description: 'Disable Snyk Scan'
           type: boolean
           default: true
+      outputs:
+        image:
+          description: "The built container image tag"
+          value: ${{ jobs.build-and-push.outputs.image }}
       
   push:
     branches: [ "main", "master", "develop", "feature/*" ]
