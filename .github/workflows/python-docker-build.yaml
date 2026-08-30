@@ -319,22 +319,4 @@ jobs:
         run: |
           echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
 
-  # 6. Deploy to Environment (ArgoCD)
-  deploy-dev:
-    needs: [init, build-and-push]
-    runs-on: devops-end2end-runners
-    environment: Dev
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Trigger ArgoCD Deployment
-        run: |
-          export PROJECT_NAME="${{ needs.init.outputs.project }}"
-          export PROMOTION_STAGE="dev"
-          export BUILD_TAG="${{ needs.init.outputs.version }}"
-          export PROJECT_BRANCH="${{ github.ref_name }}"
-          export IMAGE_URI="${{ needs.build-and-push.outputs.image }}"
-          
-          APPSET_FILE="$(argo-promote | tee /dev/stderr | tail -n1)"
-          export APPSET_FILE
-          argo-deploy
+ 
