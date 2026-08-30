@@ -1,6 +1,31 @@
 name: Python Build Pipeline
 
 on:
+  workflow_call:
+      inputs:
+        py_version:
+          description: 'Python Version'
+          required: false
+          default: '3.11'
+          type: string
+        base_image:
+          description: 'Override base docker image'
+          required: false
+          type: string
+        aws_region:
+          description: 'AWS Region'
+          required: false
+          type: string
+          default: 'us-east-1'
+        disable_sonarqube:
+          description: 'Disable SonarQube Scan'
+          type: boolean
+          default: boolean
+        disable_snyk:
+          description: 'Disable Snyk Scan'
+          type: boolean
+          default: boolean
+      
   push:
     branches: [ "main", "master", "develop", "feature/*" ]
   pull_request:
