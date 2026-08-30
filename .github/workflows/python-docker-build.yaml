@@ -318,5 +318,3 @@ jobs:
         shell: bash
         run: |
           echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
-
- 
