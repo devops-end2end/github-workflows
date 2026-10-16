@@ -27,10 +27,10 @@ permissions:
   contents: read
 
 jobs:
-  build-and-push: 
+  build-and-push:
     runs-on: devops-end2end-runners
     outputs:
-      image: ${{ steps.build-output.outputs.image }}      
+      image: ${{ steps.build-output.outputs.image }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -44,6 +44,22 @@ jobs:
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.run_number }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.sha }}
+          # Enables persistent caching across GitHub Action runs
+          cache-from: type=gha,scope=${{ inputs.ecr-repository }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.ecr-repository }}
 
       - name: Build and Push Docker Image
         shell: bash
@@ -64,4 +80,4 @@ jobs:
         id: build-output
         shell: bash
         run: |
-          echo "image=932399238655.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
