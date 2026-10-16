@@ -66,9 +66,12 @@ jobs:
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE_URI="$REGISTRY/${{ inputs.ecr-repository }}"
-          docker build -t $IMAGE_URI:${{ github.run_number }} \
+          # docker build -t $IMAGE_URI:${{ github.run_number }} \
+          #              -t $IMAGE_URI:latest \
+          #              -t $IMAGE_URI:${{ github.sha }} .
+          docker image build -t $IMAGE_URI:${{ github.run_number }} \
                        -t $IMAGE_URI:latest \
-                       -t $IMAGE_URI:${{ github.sha }} .
+                       -t $IMAGE_URI:${{ github.sha }} .          
           docker push $IMAGE_URI:${{ github.run_number }}
           docker push $IMAGE_URI:latest
           docker push $IMAGE_URI:${{ github.sha }}
