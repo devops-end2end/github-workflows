@@ -35,18 +35,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # - name: Configure AWS Credentials via OIDC
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     aws-region: ${{ inputs.aws-region }}
-      #     role-to-assume: ${{ inputs.role-to-assume }}
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
 
-      # - name: Log in to Amazon ECR
-      #   id: login-ecr
-      #   uses: aws-actions/amazon-ecr-login@v2
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # - name: Set up Docker Buildx
-      #   uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
@@ -66,18 +66,15 @@ jobs:
       #   run: |
       #     REGISTRY="${{ steps.login-ecr.outputs.registry }}"
       #     IMAGE_URI="$REGISTRY/${{ inputs.ecr-repository }}"
-
       #     docker build -t $IMAGE_URI:${{ github.run_number }} \
       #                  -t $IMAGE_URI:latest \
-      #                  -t $IMAGE_URI:${{ github.sha }} \
-      #                  .
-
+      #                  -t $IMAGE_URI:${{ github.sha }} .
       #     docker push $IMAGE_URI:${{ github.run_number }}
       #     docker push $IMAGE_URI:latest
       #     docker push $IMAGE_URI:${{ github.sha }}
 
-      # - name: Set Image Output
-      #   id: build-output
-      #   shell: bash
-      #   run: |
-      #     echo "image=${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
+      - name: Set Image Output
+        id: build-output
+        shell: bash
+        run: |
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.run_number }}" >> $GITHUB_OUTPUT
