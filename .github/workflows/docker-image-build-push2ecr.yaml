@@ -69,9 +69,12 @@ jobs:
           # docker build -t $IMAGE_URI:${{ github.run_number }} \
           #              -t $IMAGE_URI:latest \
           #              -t $IMAGE_URI:${{ github.sha }} .
-          docker image build -t $IMAGE_URI:${{ github.run_number }} \
-                       -t $IMAGE_URI:latest \
-                       -t $IMAGE_URI:${{ github.sha }} .          
+          DOCKER_BUILDKIT=1 docker image build \
+            --no-cache  \
+            --progress=plain \
+            -t $IMAGE_URI:${{ github.run_number }} \
+            -t $IMAGE_URI:latest \
+            -t $IMAGE_URI:${{ github.sha }} .          
           docker push $IMAGE_URI:${{ github.run_number }}
           docker push $IMAGE_URI:latest
           docker push $IMAGE_URI:${{ github.sha }}
