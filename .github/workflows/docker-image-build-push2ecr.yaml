@@ -63,7 +63,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:latest
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ inputs.ecr-repository }}
-          cache-to: type=gha,scope=${{ inputs.ecr-repository }},mode=max
+          cache-to: type=gha,scope=${{ inputs.ecr-repository }},mode=min
 
       # - name: Build and Push Docker Image
       #   id: build
