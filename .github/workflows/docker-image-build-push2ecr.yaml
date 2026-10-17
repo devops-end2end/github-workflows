@@ -65,50 +65,6 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.ecr-repository }}
           cache-to: type=gha,scope=${{ inputs.ecr-repository }},mode=min
 
-      # - name: Build and Push Docker Image
-      #   id: build
-      #   shell: bash
-      #   env:
-      #     REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      #     ECR_REPOSITORY: ${{ inputs.ecr-repository }}
-      #     IMAGE_TAG: ${{ github.run_number }}
-      #     GITHUB_SHA: ${{ github.sha }}
-      #     CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}
-      #     CACHE_URL_V2: ${{ env.ACTIONS_RESULTS_URL }}
-      #     CACHE_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-      #   run: |
-      #     set -euo pipefail
-
-      #     IMAGE_URI="$REGISTRY/$ECR_REPOSITORY"
-
-      #     # Fail early if the runner doesn't expose the cache runtime credentials.
-      #     if [[ -z "${CACHE_TOKEN:-}" ]]; then
-      #       echo "::error::ACTIONS_RUNTIME_TOKEN is unavailable to this build step."
-      #       exit 1
-      #     fi
-
-      #     if [[ -z "${CACHE_URL_V2:-}" && -z "${CACHE_URL:-}" ]]; then
-      #       echo "::error::GitHub Actions cache service URL is unavailable."
-      #       exit 1
-      #     fi
-
-      #     # Prefer the v2 cache service when its URL is available.
-      #     if [[ -n "${CACHE_URL_V2:-}" ]]; then
-      #       CACHE_BACKEND="type=gha,version=2,token=$CACHE_TOKEN,url_v2=$CACHE_URL_V2,scope=$ECR_REPOSITORY"
-      #     else
-      #       CACHE_BACKEND="type=gha,version=1,token=$CACHE_TOKEN,url=$CACHE_URL,scope=$ECR_REPOSITORY"
-      #     fi
-
-      #     docker buildx build \
-      #       --progress=plain \
-      #       --cache-from "$CACHE_BACKEND" \
-      #       --cache-to "$CACHE_BACKEND,mode=max" \
-      #       --tag "$IMAGE_URI:$IMAGE_TAG" \
-      #       --tag "$IMAGE_URI:latest" \
-      #       --tag "$IMAGE_URI:$GITHUB_SHA" \
-      #       --push \
-      #       .
-
       - name: Set Image Output
         id: build-output
         shell: bash
