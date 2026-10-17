@@ -52,9 +52,10 @@ jobs:
           ECR_REPOSITORY: ${{ inputs.ecr-repository }}
           IMAGE_TAG: ${{ github.run_number }}
           GITHUB_SHA: ${{ github.sha }}
+          BUILDKIT_PROGRESS: plain
+          BUILDKIT_DEBUG: 1
         run: |
           IMAGE_URI="$REGISTRY/$ECR_REPOSITORY"
-
           docker buildx build \
             --progress=plain \
             --cache-from type=gha \
