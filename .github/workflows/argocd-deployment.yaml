@@ -100,7 +100,7 @@ jobs:
           GITOPS_REPO: ${{ inputs.GITOPS_REPO }}
           APPSET_PATH: ${{ inputs.APPSET_PATH }}
         run: |
-          FULL_APPSET_PATH="${GITOPS_REPO}/apps/${APPSET_PATH}"
+          FULL_APPSET_PATH="${GITOPS_REPO}/${APPSET_PATH}"
 
           if [ ! -f "$FULL_APPSET_PATH" ]; then
             echo "ERROR: ApplicationSet file not found: $FULL_APPSET_PATH"
@@ -150,7 +150,7 @@ jobs:
       - name: Apply ArgoCD ApplicationSet
         run: |
           set -euo pipefail
-          FULL_APPSET_PATH="${{ inputs.GITOPS_REPO }}/apps/${{ inputs.APPSET_PATH }}"
+          FULL_APPSET_PATH="${{ inputs.GITOPS_REPO }}/${{ inputs.APPSET_PATH }}"
 
           echo "Applying ApplicationSet from: $FULL_APPSET_PATH"
           argocd appset create "$FULL_APPSET_PATH" \
