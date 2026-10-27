@@ -235,13 +235,23 @@ jobs:
 
       - name: Package Application
         run: |
+          if [ -f Dockerfile ]; then
+            echo "Custom Dockerfile detected. Skipping legacy packaging."
+            exit 0
+          fi
           mkdir -p libs/python target
-          pip install -r requirements.txt -t ./libs/python
-
-          cp -rv src/main/* target/
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt -t ./libs/python
+          elif [ -f pyproject.toml ]; then
+            pip install . -t ./libs/python
+          fi
+          if [ -d src/main ]; then
+            cp -rv src/main/* target/
+          elif [ -d app ]; then
+            cp -rv app target/
+          fi
           [ -d confs ] && cp -r confs target/
           [ -d scripts ] && cp -r scripts target/
-
           cd target
           tar --exclude="__init__.py" -czvf "${{ needs.init.outputs.project }}-${{ needs.init.outputs.version }}.tar.gz" *
           cd ..
