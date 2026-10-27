@@ -236,25 +236,12 @@ jobs:
       - name: Package Application
         run: |
           if [ -f Dockerfile ]; then
-            echo "Custom Dockerfile detected. Skipping legacy packaging."
+            echo "Custom Dockerfile detected. Skipping packaging."
             exit 0
           fi
-          mkdir -p libs/python target
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt -t ./libs/python
-          elif [ -f pyproject.toml ]; then
-            pip install . -t ./libs/python
-          fi
-          if [ -d src/main ]; then
-            cp -rv src/main/* target/
-          elif [ -d app ]; then
-            cp -rv app target/
-          fi
-          [ -d confs ] && cp -r confs target/
-          [ -d scripts ] && cp -r scripts target/
-          cd target
-          tar --exclude="__init__.py" -czvf "${{ needs.init.outputs.project }}-${{ needs.init.outputs.version }}.tar.gz" *
-          cd ..
+          # Legacy directory compatibility if needed
+          [ -d confs ] && cp -r confs target/ || true
+          [ -d scripts ] && cp -r scripts target/ || true
 
       - name: Ensure Dockerfile Exists
         env:
@@ -262,50 +249,66 @@ jobs:
           VERSION: ${{ needs.init.outputs.version }}
         run: |
           if [ ! -f Dockerfile ]; then
-            echo "No local Dockerfile found. Baking default into the workspace..."
+            echo "No local Dockerfile found. Baking multi-stage default into the workspace..."
             cat << "EOF" > Dockerfile
-          # Utilizing the dynamically injected BASE_IMAGE (defaults to upstream if not explicitly provided)
+          # ==========================================
+          # Stage 1: Build Dependencies in-container
+          # ==========================================
           ARG BASE_IMAGE
-          FROM ${BASE_IMAGE}
-
+          FROM ${BASE_IMAGE} AS builder
+          WORKDIR /build
+          # Install build tools if compilation is required
+          RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/* || true
+          # Create isolated virtual environment
+          RUN python -m venv /opt/venv
+          ENV PATH="/opt/venv/bin:$PATH"
+          # Copy package specifications for caching
+          COPY requirements*.txt* pyproject*.toml* setup*.py* ./
+          # Install dependencies inside the target OS (prevents glibc mismatch)
+          RUN if [ -f pyproject.toml ]; then \
+                  pip install --no-cache-dir --upgrade pip setuptools wheel && \
+                  pip install --no-cache-dir .; \
+              elif [ -f requirements.txt ]; then \
+                  pip install --no-cache-dir --upgrade pip setuptools wheel && \
+                  pip install --no-cache-dir -r requirements.txt; \
+              fi
+          # ==========================================
+          # Stage 2: Minimal Runtime Image
+          # ==========================================
+          FROM ${BASE_IMAGE} AS runtime
           ARG DESCRIPTION
           ARG VERSION
           LABEL com.admarketplace.maintainer=ci@admarketplace.com
           LABEL com.admarketplace.description=${DESCRIPTION}
           LABEL com.admarketplace.version=${VERSION}
-
           LABEL com.datadoghq.tags.service=${PROJECT}
           LABEL com.datadoghq.tags.version=${VERSION}
-          ENV DD_SERVICE ${PROJECT}
-          ENV DD_VERSION ${VERSION}
-
+          ENV DD_SERVICE=${PROJECT}
+          ENV DD_VERSION=${VERSION}
           ARG USER=jobuser
           ARG GROUP=ampdev
           ARG PROJECT
-          ENV PYTHONPATH="/app/libs/python"
           ENV PROJECT=${PROJECT}
           ENV PROJECT_ACTIVE_DIR=/app
-
-          # Cleaned up FROM prefix, and added groupadd/useradd to ensure compatibility when using standard upstream images
-          RUN find /etc/apt/sources.list.d/ -name '*.sources' -exec sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.mit.edu/ubuntu|g;s|http://security.ubuntu.com/ubuntu|http://mirrors.mit.edu/ubuntu|g' {} + 2>/dev/null || true && \
-              find /etc/apt/sources.list.d/ -iname '*deadsnakes*' -delete 2>/dev/null || true && \
-              rm -rf /var/lib/apt/lists/ppa.launchpadcontent.net* 2>/dev/null || true && \
-              apt-get update && apt-get install -y git && \
-              groupadd -f $GROUP || true && \
+          ENV PATH="/opt/venv/bin:$PATH"
+          ENV PYTHONDONTWRITEBYTECODE=1
+          ENV PYTHONUNBUFFERED=1
+          RUN groupadd -f $GROUP || true && \
               useradd -m -g $GROUP $USER || true
-
           WORKDIR /app
-
-          CMD scripts/run.sh
-
-          RUN mkdir logs data
-          COPY libs libs
-          COPY target/${PROJECT}-${VERSION}.tar.gz .
-          RUN tar -xvf ${PROJECT}-${VERSION}.tar.gz && \
-              rm -f ${PROJECT}-${VERSION}.tar.gz && \
-              chmod +x /app/scripts/* && \
-              chown -R $USER:$GROUP /app/*
+          # Copy isolated virtual environment from builder stage
+          COPY --from=builder /opt/venv /opt/venv
+          # Copy application source
+          COPY . /app/
+          RUN mkdir -p logs data && \
+              [ -d scripts ] && chmod +x scripts/* || true && \
+              chown -R $USER:$GROUP /app
           USER $USER
+          CMD if [ -f scripts/run.sh ]; then \
+                  scripts/run.sh; \
+              elif [ -d app ]; then \
+                  uvicorn app.main:app --host 0.0.0.0 --port 8000; \
+              fi
           EOF
           else
             echo "Local Dockerfile found. Bypassing baked-in fallback."
@@ -329,25 +332,20 @@ jobs:
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
-        env:
-          VERSION: ${{ needs.init.outputs.version }}
-          BASE_IMAGE: ${{ needs.init.outputs.base_image }}
-          PROJECT: ${{ needs.init.outputs.project }}
-          DESCRIPTION: ${{ needs.init.outputs.description }}
         with:
           context: .
           push: true
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:$VERSION
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:latest
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ inputs.ecr-repository }}
-          cache-to: type=gha,scope=${{ inputs.ecr-repository }},mode=min
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:${{ needs.init.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project }}
+          cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project }},mode=min
           build-args: |
-            VERSION=$VERSION
-            BASE_IMAGE=$BASE_IMAGE
-            PROJECT=$PROJECT
-            DESCRIPTION=$DESCRIPTION
+            VERSION=${{ needs.init.outputs.version }}
+            BASE_IMAGE=${{ needs.init.outputs.base_image }}
+            PROJECT=${{ needs.init.outputs.project }}
+            DESCRIPTION=${{ inputs.description || needs.init.outputs.project }}
 
       - name: Set Image Output
         id: build-output
