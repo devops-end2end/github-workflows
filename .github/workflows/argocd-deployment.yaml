@@ -100,7 +100,7 @@ jobs:
           GITOPS_REPO: ${{ inputs.GITOPS_REPO }}
           APPSET_PATH: ${{ inputs.APPSET_PATH }}
         run: |
-          FULL_APPSET_PATH="${GITOPS_REPO}/${APPSET_PATH}"
+          FULL_APPSET_PATH="${GITOPS_REPO}/apps/${APPSET_PATH}"
 
           if [ ! -f "$FULL_APPSET_PATH" ]; then
             echo "ERROR: ApplicationSet file not found: $FULL_APPSET_PATH"
@@ -150,7 +150,7 @@ jobs:
       - name: Apply ArgoCD ApplicationSet
         run: |
           set -euo pipefail
-          FULL_APPSET_PATH="${{ inputs.GITOPS_REPO }}/${{ inputs.APPSET_PATH }}"
+          FULL_APPSET_PATH="${{ inputs.GITOPS_REPO }}/apps/${{ inputs.APPSET_PATH }}"
 
           echo "Applying ApplicationSet from: $FULL_APPSET_PATH"
           argocd appset create "$FULL_APPSET_PATH" \
@@ -180,13 +180,13 @@ jobs:
         run: |
           set -euo pipefail
           APP_NAME="${{ matrix.app.app_name }}"
-          
+
           # Step 1: Retry loop waiting for ApplicationSet controller to generate the Application
           echo "Waiting for ArgoCD application '$APP_NAME' to be registered by ApplicationSet controller..."
           MAX_RETRIES=12
           RETRY_INTERVAL=5
           count=0
-          
+
           until argocd app get "$APP_NAME" \
             --server ${{ inputs.ARGOCD_SERVER }} \
             --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web >/dev/null 2>&1; do
@@ -198,14 +198,14 @@ jobs:
             echo "App '$APP_NAME' not found yet. Retrying in ${RETRY_INTERVAL}s... ($count/$MAX_RETRIES)"
             sleep $RETRY_INTERVAL
           done
-          
+
           echo "✓ ArgoCD app '$APP_NAME' exists."
 
           # Step 2: Sync with retry loop
           echo "Syncing ArgoCD app: $APP_NAME"
           SYNC_RETRIES=3
           SYNC_COUNT=0
-          
+
           until argocd app sync "$APP_NAME" \
             --server ${{ inputs.ARGOCD_SERVER }} \
             --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web; do
@@ -217,7 +217,7 @@ jobs:
             echo "Sync command failed/rejected. Retrying in 10s... ($SYNC_COUNT/$SYNC_RETRIES)"
             sleep 10
           done
-          
+
           echo "✓ ArgoCD app $APP_NAME synced successfully"
 
       - name: Wait for ArgoCD Application Health
@@ -232,17 +232,17 @@ jobs:
           fi
 
           echo "Waiting for ArgoCD app sync: $APP_NAME (Timeout: ${TIMEOUT}s)"
-          
+
           set +e
           argocd app wait "$APP_NAME" \
             --server ${{ inputs.ARGOCD_SERVER }} \
             --plaintext --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}" --grpc-web --sync $HEALTH --timeout "$TIMEOUT"
           EXIT_CODE=$?
           set -e
-          
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "❌ ArgoCD app wait failed with exit code: $EXIT_CODE for $APP_NAME"
             exit $EXIT_CODE
           fi
-          
+
           echo "✓ ArgoCD app $APP_NAME wait completed successfully"
