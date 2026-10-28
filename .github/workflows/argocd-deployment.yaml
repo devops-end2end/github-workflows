@@ -113,7 +113,7 @@ jobs:
             ENV=$(echo "$item" | jq -r '.env')
             DC=$(echo "$item" | jq -r '.datacenter')
             
-            TARGET_DIR="${GITOPS_REPO}/${PROJECT_NAME}/env/${ENV}-${DC}"
+            TARGET_DIR="${GITOPS_REPO}/apps/${PROJECT_NAME}/env/${ENV}-${DC}"
             if [ -d "$TARGET_DIR" ]; then
               echo "Updating image in $TARGET_DIR to: $IMAGE"
               (cd "$TARGET_DIR" && kustomize edit set image "$IMAGE")
