@@ -115,7 +115,7 @@ jobs:
       - name: Set up JDK ${{ inputs.java_version }}
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
+          distribution: "corretto"
           java-version: "${{ inputs.java_version }}"
           cache: "gradle"
 
