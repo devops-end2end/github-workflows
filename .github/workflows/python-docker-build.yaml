@@ -1,4 +1,4 @@
-name: Python Build Pipeline
+name: Reusable Python Docker Build & Push
 
 on:
   workflow_call:
@@ -33,80 +33,55 @@ on:
       image:
         description: "The built container image tag"
         value: ${{ jobs.build-and-push.outputs.image }}
-  push:
-    branches: ["main", "master", "develop", "feature/*"]
-  pull_request:
-    branches: ["main", "master"]
-  workflow_dispatch:
-    inputs:
-      py_version:
-        description: "Python Version"
-        required: true
-        default: "3.11"
-        type: choice
-        options:
-          - "3.8"
-          - "3.9"
-          - "3.10"
-          - "3.11"
-          - "3.12"
-          - "3.13"
-      base_image:
-        description: "Override base docker image (defaults to upstream python)"
-        required: false
-        type: string
-      aws_region:
-        description: "AWS Region"
-        required: false
-        type: string
-        default: "us-east-1"
-      disable_sonarqube:
-        description: "Disable SonarQube Scan"
-        type: boolean
-        default: false
-      disable_snyk:
-        description: "Disable Snyk Scan"
-        type: boolean
-        default: false
 
-env:
-  PY_VER: ${{ inputs.py_version || '3.11' }}
-  AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
-  DISABLE_SONARQUBE: ${{ inputs.disable_sonarqube || false }}
-  DISABLE_SNYK: ${{ inputs.disable_snyk || false }}
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   # 1. Pipeline Initialization & Variable Setup
   init:
     runs-on: devops-end2end-runners
     outputs:
-      project: ${{ steps.vars.outputs.PROJECT }}
+      project_name: ${{ steps.vars.outputs.PROJECT_NAME }}
       version: ${{ steps.vars.outputs.VERSION }}
-      major_minor: ${{ steps.vars.outputs.MAJOR_MINOR_VER }}
       base_image: ${{ steps.vars.outputs.BASE_IMAGE }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PY_VER }}
+          python-version: ${{ inputs.py_version }}
 
       - name: Calculate Environment Variables
         id: vars
         shell: bash
         run: |
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
           BRANCH_NAME="${GITHUB_REF_NAME}"
 
           # Extract version from pyproject.toml (PEP 621 or Poetry) or fallback to setup.py
           if [ -f pyproject.toml ]; then
-            MAJOR_MINOR=$(python -c 'import tomllib; f=open("pyproject.toml","rb"); data=tomllib.load(f); print(data.get("project",{}).get("version") or data.get("tool",{}).get("poetry",{}).get("version","0.1.0"))')
+            MAJOR_MINOR=$(python -c 'import tomllib; f=open("pyproject.toml","rb"); data=tomllib.load(f); print(data.get("project",{}).get("version") or data.get("tool",{}).get("poetry",{}).get("version","0.1"))')
           elif [ -f setup.py ]; then
             MAJOR_MINOR=$(python setup.py --version)
           else
-            MAJOR_MINOR="0.1.0"
+            MAJOR_MINOR="0.1"
           fi
+
+          if [ -z "$MAJOR_MINOR" ] || [ "$MAJOR_MINOR" = "version" ]; then
+            MAJOR_MINOR="0.1"
+          fi
+
+          # Enforce strict MAJOR.MINOR standard
+          IFS='.' read -r -a VERSION_PARTS <<< "$MAJOR_MINOR"
+          if [ "${#VERSION_PARTS[@]}" -gt 2 ]; then
+            echo "::error::Invalid version format '${MAJOR_MINOR}' detected. Platform compliance requires version to be strictly MAJOR.MINOR (e.g., '0.1')."
+            exit 1
+          fi
+
           BUILD_NUM="${GITHUB_RUN_NUMBER}"
 
           if [[ "$BRANCH_NAME" == "master" || "$BRANCH_NAME" == "main" ]]; then
@@ -115,15 +90,14 @@ jobs:
             VERSION="${MAJOR_MINOR}.${BUILD_NUM}-${BRANCH_NAME//\//-}"
           fi
 
-          # Determine base image - Use input if provided, otherwise default to upstream official python image
+          # Determine base image - Use input if provided, otherwise default to Amazon Linux 2023 minimal
           if [ -n "${{ inputs.base_image }}" ]; then
             BASE_IMAGE="${{ inputs.base_image }}"
           else
-            BASE_IMAGE="python:${PY_VER}"
+            BASE_IMAGE="public.ecr.aws/amazonlinux/amazonlinux:2023-minimal"
           fi
 
-          echo "PROJECT=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "MAJOR_MINOR_VER=$MAJOR_MINOR" >> $GITHUB_OUTPUT
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_OUTPUT
 
@@ -137,7 +111,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PY_VER }}
+          python-version: ${{ inputs.py_version }}
 
       - name: Run Pytest
         run: |
@@ -160,7 +134,7 @@ jobs:
           fi
 
       - name: Upload Coverage Artifact
-        if: ${{ env.DISABLE_SONARQUBE == 'false' }}
+        if: ${{ inputs.disable_sonarqube == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -169,7 +143,7 @@ jobs:
   # 3. SonarQube Scan (Conditional)
   sonar-scan:
     needs: [init, unit-tests]
-    if: ${{ inputs.disable_sonarqube == false && needs.init.outputs.disable_sonarqube != 'true' }}
+    if: ${{ inputs.disable_sonarqube == false }}
     runs-on: devops-end2end-runners
     steps:
       - uses: actions/checkout@v4
@@ -188,8 +162,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=admarketplace_${{ needs.init.outputs.project }}
-            -Dsonar.projectName=${{ needs.init.outputs.project }}
+            -Dsonar.projectKey=admarketplace_${{ needs.init.outputs.project_name }}
+            -Dsonar.projectName=${{ needs.init.outputs.project_name }}
             -Dsonar.projectVersion=${{ needs.init.outputs.version }}
             -Dsonar.python.coverage.reportPaths=coverage.xml
             -Dsonar.sources=src/main/python
@@ -198,7 +172,7 @@ jobs:
   # 4. Snyk Scan (Conditional)
   snyk-scan:
     needs: [init, unit-tests]
-    if: ${{ inputs.disable_snyk == false && needs.init.outputs.disable_snyk != 'true' }}
+    if: ${{ inputs.disable_snyk == false }}
     runs-on: devops-end2end-runners
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +180,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PY_VER }}
+          python-version: ${{ inputs.py_version }}
 
       - name: Snyk Security Scan
         env:
@@ -226,12 +200,13 @@ jobs:
     outputs:
       image: ${{ steps.build-output.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PY_VER }}
+          python-version: ${{ inputs.py_version }}
 
       - name: Package Application
         run: |
@@ -239,32 +214,37 @@ jobs:
             echo "Custom Dockerfile detected. Skipping packaging."
             exit 0
           fi
-          # Legacy directory compatibility if needed
           [ -d confs ] && cp -r confs target/ || true
           [ -d scripts ] && cp -r scripts target/ || true
 
       - name: Ensure Dockerfile Exists
         env:
-          PROJECT: ${{ needs.init.outputs.project }}
+          PROJECT_NAME: ${{ needs.init.outputs.project_name }}
           VERSION: ${{ needs.init.outputs.version }}
         run: |
           if [ ! -f Dockerfile ]; then
-            echo "No local Dockerfile found. Baking multi-stage default into the workspace..."
+            echo "No local Dockerfile found. Baking multi-stage Amazon Linux 2023 default into the workspace..."
             cat << "EOF" > Dockerfile
           # ==========================================
-          # Stage 1: Build Dependencies in-container
+          # Stage 1: Build Dependencies in-container (Amazon Linux 2023)
           # ==========================================
           ARG BASE_IMAGE
           FROM ${BASE_IMAGE} AS builder
           WORKDIR /build
-          # Install build tools if compilation is required
-          RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/* || true
+
+          # Install python3, pip, git, and build tools via microdnf
+          RUN microdnf update -y && \
+              microdnf install -y python3 python3-pip shadow-utils git gcc make && \
+              microdnf clean all
+
           # Create isolated virtual environment
-          RUN python -m venv /opt/venv
+          RUN python3 -m venv /opt/venv
           ENV PATH="/opt/venv/bin:$PATH"
+
           # Copy package specifications for caching
           COPY requirements*.txt* pyproject*.toml* setup*.py* ./
-          # Install dependencies inside the target OS (prevents glibc mismatch)
+
+          # Install dependencies inside the target OS
           RUN if [ -f pyproject.toml ]; then \
                   pip install --no-cache-dir --upgrade pip setuptools wheel && \
                   pip install --no-cache-dir .; \
@@ -272,38 +252,54 @@ jobs:
                   pip install --no-cache-dir --upgrade pip setuptools wheel && \
                   pip install --no-cache-dir -r requirements.txt; \
               fi
+
           # ==========================================
           # Stage 2: Minimal Runtime Image
           # ==========================================
           FROM ${BASE_IMAGE} AS runtime
           ARG DESCRIPTION
           ARG VERSION
+          ARG PROJECT_NAME
+
+          # Ensure python3 is available in the runtime container if base image is minimal
+          RUN microdnf update -y && \
+              microdnf install -y python3 shadow-utils && \
+              microdnf clean all
+
           LABEL com.admarketplace.maintainer=ci@admarketplace.com
           LABEL com.admarketplace.description=${DESCRIPTION}
           LABEL com.admarketplace.version=${VERSION}
-          LABEL com.datadoghq.tags.service=${PROJECT}
+          LABEL com.datadoghq.tags.service=${PROJECT_NAME}
           LABEL com.datadoghq.tags.version=${VERSION}
-          ENV DD_SERVICE=${PROJECT}
+
+          ENV DD_SERVICE=${PROJECT_NAME}
           ENV DD_VERSION=${VERSION}
-          ARG USER=jobuser
-          ARG GROUP=ampdev
-          ARG PROJECT
-          ENV PROJECT=${PROJECT}
+          ENV PROJECT_NAME=${PROJECT_NAME}
           ENV PROJECT_ACTIVE_DIR=/app
           ENV PATH="/opt/venv/bin:$PATH"
           ENV PYTHONDONTWRITEBYTECODE=1
           ENV PYTHONUNBUFFERED=1
+
+          ARG USER=jobuser
+          ARG GROUP=ampdev
+
           RUN groupadd -f $GROUP || true && \
               useradd -m -g $GROUP $USER || true
+
           WORKDIR /app
+
           # Copy isolated virtual environment from builder stage
           COPY --from=builder /opt/venv /opt/venv
+
           # Copy application source
           COPY . /app/
+
           RUN mkdir -p logs data && \
               [ -d scripts ] && chmod +x scripts/* || true && \
               chown -R $USER:$GROUP /app
+
           USER $USER
+
           CMD if [ -f scripts/run.sh ]; then \
                   scripts/run.sh; \
               elif [ -d app ]; then \
@@ -317,7 +313,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ inputs.aws_region }}
           role-to-assume: "arn:aws:iam::932399238655:role/github-actions-ecr-role"
 
       - name: Log in to Amazon ECR
@@ -336,19 +332,19 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:${{ needs.init.outputs.version }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:latest
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project }}
-          cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project }},mode=min
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }}
+          cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }},mode=min
           build-args: |
             VERSION=${{ needs.init.outputs.version }}
             BASE_IMAGE=${{ needs.init.outputs.base_image }}
-            PROJECT=${{ needs.init.outputs.project }}
-            DESCRIPTION=${{ inputs.description || needs.init.outputs.project }}
+            PROJECT_NAME=${{ needs.init.outputs.project_name }}
+            DESCRIPTION=${{ inputs.description || needs.init.outputs.project_name }}
 
       - name: Set Image Output
         id: build-output
         shell: bash
         run: |
-          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
