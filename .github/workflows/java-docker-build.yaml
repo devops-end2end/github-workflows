@@ -1,0 +1,297 @@
+name: Reusable Java Docker Build & Push
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        required: true
+        type: string
+        description: "Target Java runtime version (e.g., 11, 17, 21)"
+      description:
+        description: "Description of the application"
+        required: false
+        type: string
+      base_image:
+        description: "Override base docker image (defaults to official eclipse-temurin)"
+        required: false
+        type: string
+      aws_region:
+        description: "AWS Region"
+        required: false
+        type: string
+        default: "us-east-1"
+      disable_sonarqube:
+        description: "Disable SonarQube Scan"
+        type: boolean
+        default: true
+      disable_snyk:
+        description: "Disable Snyk Scan"
+        type: boolean
+        default: true
+    outputs:
+      image:
+        description: "The built container image tag"
+        value: ${{ jobs.build-and-push.outputs.image }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # 1. Pipeline Initialization & Variable Setup
+  init:
+    runs-on: devops-end2end-runners
+    outputs:
+      project_name: ${{ steps.vars.outputs.PROJECT_NAME }}
+      version: ${{ steps.vars.outputs.VERSION }}
+      base_image: ${{ steps.vars.outputs.BASE_IMAGE }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "${{ inputs.java_version }}"
+          cache: "gradle"
+
+      - name: Calculate and Validate Environment Variables
+        id: vars
+        shell: bash
+        run: |
+          PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+
+          # Extract version from build.gradle / build.gradle.kts or default to 0.1
+          if [ -f build.gradle.kts ]; then
+            RAW_VERSION=$(grep -E '^version\s*=' build.gradle.kts | cut -d'"' -f2 | cut -d"'" -f2 | tr -d '[:space:]' || echo "0.1")
+          elif [ -f build.gradle ]; then
+            RAW_VERSION=$(grep -E '^version\s*=' build.gradle | cut -d'"' -f2 | cut -d"'" -f2 | tr -d '[:space:]' || echo "0.1")
+          else
+            RAW_VERSION="0.1"
+          fi
+
+          # Fail immediately if version is missing or unparseable
+          if [ -z "$RAW_VERSION" ] || [ "$RAW_VERSION" = "version" ]; then
+            echo "::error::Missing or invalid version in build file. Platform compliance requires an explicit version defined in MAJOR.MINOR format (e.g., version = '0.1'). Please update your build.gradle / build.gradle.kts."
+            exit 1
+          fi
+
+          # Enforce strict MAJOR.MINOR standard (fail build if revision/patch number like 0.1.0 is provided)
+          IFS='.' read -r -a VERSION_PARTS <<< "$RAW_VERSION"
+          if [ "${#VERSION_PARTS[@]}" -gt 2 ]; then
+            echo "::error::Invalid version format '${RAW_VERSION}' detected in build file. Platform compliance requires version to be strictly MAJOR.MINOR (e.g., '0.1'). Revision numbers (like '0.1.0') are managed automatically by the build engine. Please update your build.gradle / build.gradle.kts version."
+            exit 1
+          fi
+
+          MAJOR_MINOR="$RAW_VERSION"
+          BUILD_NUM="${GITHUB_RUN_NUMBER}"
+
+          if [[ "$BRANCH_NAME" == "master" || "$BRANCH_NAME" == "main" ]]; then
+            VERSION="${MAJOR_MINOR}.${BUILD_NUM}"
+          else
+            VERSION="${MAJOR_MINOR}.${BUILD_NUM}-${BRANCH_NAME//\//-}"
+          fi
+
+          # Default to Amazon Corretto Alpine image for the requested Java major version
+          if [ -n "${{ inputs.base_image }}" ]; then
+            BASE_IMAGE="${{ inputs.base_image }}"
+          else
+            BASE_IMAGE="amazoncorretto:${{ inputs.java_version }}-alpine"
+          fi
+
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_OUTPUT
+
+  # 2. Unit Tests & Build Jar
+  unit-tests:
+    needs: init
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "${{ inputs.java_version }}"
+          cache: "gradle"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run Gradle Test & Build
+        run: |
+          ./gradlew test bootJar --no-daemon
+
+      - name: Upload Coverage Artifact
+        if: ${{ inputs.disable_sonarqube == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-build-artifacts
+          path: |
+            build/libs/*.jar
+            build/reports/jacoco/test/jacocoTestReport.xml
+
+  # 3. SonarQube Scan (Conditional)
+  sonar-scan:
+    needs: [init, unit-tests]
+    if: ${{ inputs.disable_sonarqube == false }}
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: java-build-artifacts
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarcloud-github-action@v3.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=admarketplace_${{ needs.init.outputs.project_name }}
+            -Dsonar.projectName=${{ needs.init.outputs.project_name }}
+            -Dsonar.projectVersion=${{ needs.init.outputs.version }}
+            -Dsonar.sources=src/main/java
+            -Dsonar.tests=src/test/java
+            -Dsonar.java.binaries=build/classes
+            -Dsonar.organization=admarketplace
+
+  # 4. Snyk Security Scan (Conditional)
+  snyk-scan:
+    needs: [init, unit-tests]
+    if: ${{ inputs.disable_snyk == false }}
+    runs-on: devops-end2end-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Snyk Open Source Security Test
+        uses: snyk/actions/gradle@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # 5. Build Packaging Artifacts and Push Docker Image to ECR
+  build-and-push:
+    needs: [init, unit-tests]
+    runs-on: devops-end2end-runners
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.build-output.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "${{ inputs.java_version }}"
+          cache: "gradle"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Package Application Jar
+        run: |
+          if [ -f Dockerfile ]; then
+            echo "Custom Dockerfile detected. Skipping packaging."
+            exit 0
+          fi
+          ./gradlew bootJar --no-daemon
+
+      - name: Ensure Dockerfile Exists
+        env:
+          PROJECT_NAME: ${{ needs.init.outputs.project_name }}
+          VERSION: ${{ needs.init.outputs.version }}
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "No local Dockerfile found. Baking multi-stage Java default into the workspace..."
+            cat << "EOF" > Dockerfile
+          # ==========================================
+          # Stage 1: Runtime Base Image Setup
+          # ==========================================
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE} AS runtime
+          ARG DESCRIPTION
+          ARG VERSION
+          ARG PROJECT_NAME
+
+          LABEL com.admarketplace.maintainer=ci@admarketplace.com
+          LABEL com.admarketplace.description=${DESCRIPTION}
+          LABEL com.admarketplace.version=${VERSION}
+          LABEL com.datadoghq.tags.service=${PROJECT_NAME}
+          LABEL com.datadoghq.tags.version=${VERSION}
+
+          ENV DD_SERVICE=${PROJECT_NAME}
+          ENV DD_VERSION=${VERSION}
+          ENV PROJECT_NAME=${PROJECT_NAME}
+
+          ARG USER=jobuser
+          ARG GROUP=ampdev
+
+          RUN addgroup -S $GROUP && adduser -S $USER -G $GROUP
+
+          WORKDIR /app
+
+          # Copy built fat jar from gradle build output
+          COPY build/libs/*-all.jar app.jar || COPY build/libs/*.jar app.jar
+
+          RUN chown -R $USER:$GROUP /app
+
+          USER $USER
+
+          EXPOSE 8000
+
+          ENTRYPOINT ["java", "-jar", "app.jar"]
+          EOF
+          else
+            echo "Local Dockerfile found. Bypassing baked-in fallback."
+          fi
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: "arn:aws:iam::932399238655:role/github-actions-ecr-role"
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          version: latest
+          driver: docker-container
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }}
+          cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }},mode=min
+          build-args: |
+            VERSION=${{ needs.init.outputs.version }}
+            BASE_IMAGE=${{ needs.init.outputs.base_image }}
+            PROJECT_NAME=${{ needs.init.outputs.project_name }}
+            DESCRIPTION=${{ inputs.description || needs.init.outputs.project_name }}
+
+      - name: Set Image Output
+        id: build-output
+        shell: bash
+        run: |
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
