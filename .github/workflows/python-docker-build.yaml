@@ -229,18 +229,18 @@ jobs:
             echo "No local Dockerfile found. Baking multi-stage Amazon Linux 2023 default into the workspace..."
             cat << "EOF" > Dockerfile
           # ==========================================
-          # Stage 1: Build Dependencies in-container (Amazon Linux 2023)
+          # Stage 1: Build Dependencies in-container
           # ==========================================
           FROM ${{ needs.init.outputs.base_image }} AS builder
           WORKDIR /build
 
-          # Install python3, pip, git, and build tools via microdnf
+          # Install python ${{ needs.init.outputs.project_name }} and build tools via microdnf
           RUN microdnf update -y && \
-              microdnf install -y python3 python3-pip shadow-utils git gcc make && \
+              microdnf install -y python${{ needs.init.outputs.project_name }} python${{ needs.init.outputs.project_name }}-pip shadow-utils git gcc make && \
               microdnf clean all
 
-          # Create isolated virtual environment
-          RUN python3 -m venv /opt/venv
+          # Create isolated virtual environment using python${{ needs.init.outputs.project_name }}
+          RUN python${{ needs.init.outputs.project_name }} -m venv /opt/venv
           ENV PATH="/opt/venv/bin:$PATH"
 
           # Copy package specifications for caching
@@ -260,9 +260,9 @@ jobs:
           # ==========================================
           FROM ${{ needs.init.outputs.base_image }} AS runtime
 
-          # Ensure python3 is available in the runtime container if base image is minimal
+          # Install python ${{ needs.init.outputs.project_name }} in the runtime container
           RUN microdnf update -y && \
-              microdnf install -y python3 shadow-utils && \
+              microdnf install -y python${{ needs.init.outputs.project_name }} shadow-utils && \
               microdnf clean all
 
           LABEL com.datadoghq.tags.service=${{ needs.init.outputs.project_name }}
@@ -287,9 +287,11 @@ jobs:
           # Copy application source
           COPY . /app/
 
+          # Fixed single RUN chain for setup and ownership permissions
           RUN mkdir -p logs data && \
               [ -d scripts ] && chmod +x scripts/* || true && \
-          RUN chown -R nonroot:nonroot /app
+              chown -R nonroot:nonroot /app
+
           USER nonroot
 
           CMD if [ -f scripts/run.sh ]; then \
