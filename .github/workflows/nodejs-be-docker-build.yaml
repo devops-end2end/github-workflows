@@ -3,7 +3,7 @@ name: Reusable Node.js Backend Docker Build & Push
 on:
   workflow_call:
     inputs:
-      node_version:
+      nodejs_version:
         required: true
         type: string
         description: "Target Node.js runtime version (e.g., 18, 20, 22)"
@@ -58,10 +58,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Calculate and Validate Environment Variables
@@ -104,7 +104,7 @@ jobs:
           if [ -n "${{ inputs.base_image }}" ]; then
             BASE_IMAGE="${{ inputs.base_image }}"
           else
-            BASE_IMAGE="node:${{ inputs.node_version }}-alpine"
+            BASE_IMAGE="node:${{ inputs.nodejs_version }}-alpine"
           fi
 
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
@@ -119,10 +119,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Install Dependencies
@@ -180,10 +180,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Install Dependencies
@@ -216,7 +216,7 @@ jobs:
           # ==========================================
           # Stage 1: Install production dependencies
           # ==========================================
-          FROM node:${{ inputs.node_version }}-alpine AS deps
+          FROM node:${{ inputs.nodejs_version }}-alpine AS deps
           WORKDIR /app
           COPY package*.json ./
           RUN npm ci --omit=dev
