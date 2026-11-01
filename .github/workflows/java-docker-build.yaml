@@ -233,11 +233,18 @@ jobs:
         run: |
           if [ ! -f Dockerfile ]; then
             echo "No local Dockerfile found. Baking multi-stage Java default into the workspace..."
-            cat << "EOF" > Dockerfile
+           cat << "EOF" > Dockerfile
           # ==========================================
-          # Stage 1: Runtime Base Image Setup
+          # Stage 1: Build Jar via Gradle
           # ==========================================
-          ARG BASE_IMAGE
+          FROM amazoncorretto:${{ inputs.java_version }}-alpine AS builder
+          WORKDIR /build
+          COPY . .
+          RUN chmod +x gradlew && ./gradlew bootJar --no-daemon
+
+          # ==========================================
+          # Stage 2: Minimal Runtime Image
+          # ==========================================
           FROM ${BASE_IMAGE} AS runtime
           ARG DESCRIPTION
           ARG VERSION
@@ -251,25 +258,18 @@ jobs:
 
           ENV DD_SERVICE=${PROJECT_NAME}
           ENV DD_VERSION=${VERSION}
-          ENV PROJECT_NAME=${PROJECT_NAME}
 
-          ARG USER=jobuser
-          ARG GROUP=ampdev
-
-          RUN addgroup -S $GROUP && adduser -S $USER -G $GROUP
-
+          RUN addgroup -S ampdev && adduser -S jobuser -G ampdev
           WORKDIR /app
 
-          # Copy built fat jar from gradle build output
-          COPY build/libs/*-all.jar app.jar || COPY build/libs/*.jar app.jar
+          # Copy the built jar from the builder stage safely
+          COPY --from=builder /build/build/libs/*.jar /app/app.jar
 
-          RUN chown -R $USER:$GROUP /app
+          RUN chown -R jobuser:ampdev /app
+          USER jobuser
 
-          USER $USER
-
-          EXPOSE 8000
-
-          ENTRYPOINT ["java", "-jar", "app.jar"]
+          EXPOSE 8080
+          ENTRYPOINT ["java", "-jar", "/app/app.jar"]
           EOF
           else
             echo "Local Dockerfile found. Bypassing baked-in fallback."
