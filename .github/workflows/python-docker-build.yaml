@@ -276,8 +276,9 @@ jobs:
           ENV PYTHONDONTWRITEBYTECODE=1
           ENV PYTHONUNBUFFERED=1
 
-          RUN addgroup -g 65532 -S nonroot && \
-              adduser -u 65532 -S nonroot -G nonroot
+          RUN groupadd -g 65532 nonroot || true && \
+              useradd -u 65532 -g 65532 -m nonroot || true
+              
           WORKDIR /app
 
           # Copy isolated virtual environment from builder stage
