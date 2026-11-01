@@ -231,8 +231,7 @@ jobs:
           # ==========================================
           # Stage 1: Build Dependencies in-container (Amazon Linux 2023)
           # ==========================================
-          ARG BASE_IMAGE
-          FROM ${BASE_IMAGE} AS builder
+          FROM ${{ needs.init.outputs.base_image }} AS builder
           WORKDIR /build
 
           # Install python3, pip, git, and build tools via microdnf
@@ -259,36 +258,26 @@ jobs:
           # ==========================================
           # Stage 2: Minimal Runtime Image
           # ==========================================
-          FROM ${BASE_IMAGE} AS runtime
-          ARG DESCRIPTION
-          ARG VERSION
-          ARG PROJECT_NAME
+          FROM ${{ needs.init.outputs.base_image }} AS runtime
 
           # Ensure python3 is available in the runtime container if base image is minimal
           RUN microdnf update -y && \
               microdnf install -y python3 shadow-utils && \
               microdnf clean all
 
-          LABEL com.admarketplace.maintainer=ci@admarketplace.com
-          LABEL com.admarketplace.description=${DESCRIPTION}
-          LABEL com.admarketplace.version=${VERSION}
-          LABEL com.datadoghq.tags.service=${PROJECT_NAME}
-          LABEL com.datadoghq.tags.version=${VERSION}
+          LABEL com.datadoghq.tags.service=${{ needs.init.outputs.project_name }}
+          LABEL com.datadoghq.tags.version=${{ needs.init.outputs.version }}
 
-          ENV DD_SERVICE=${PROJECT_NAME}
-          ENV DD_VERSION=${VERSION}
-          ENV PROJECT_NAME=${PROJECT_NAME}
+          ENV DD_SERVICE=${{ needs.init.outputs.project_name }}
+          ENV DD_VERSION=${{ needs.init.outputs.version }}
+          ENV PROJECT_NAME=${{ needs.init.outputs.project_name }}
           ENV PROJECT_ACTIVE_DIR=/app
           ENV PATH="/opt/venv/bin:$PATH"
           ENV PYTHONDONTWRITEBYTECODE=1
           ENV PYTHONUNBUFFERED=1
 
-          ARG USER=jobuser
-          ARG GROUP=ampdev
-
-          RUN groupadd -f $GROUP || true && \
-              useradd -m -g $GROUP $USER || true
-
+          RUN addgroup -g 65532 -S nonroot && \
+              adduser -u 65532 -S nonroot -G nonroot
           WORKDIR /app
 
           # Copy isolated virtual environment from builder stage
@@ -299,9 +288,8 @@ jobs:
 
           RUN mkdir -p logs data && \
               [ -d scripts ] && chmod +x scripts/* || true && \
-              chown -R $USER:$GROUP /app
-
-          USER $USER
+          RUN chown -R nonroot:nonroot /app
+          USER nonroot
 
           CMD if [ -f scripts/run.sh ]; then \
                   scripts/run.sh; \
