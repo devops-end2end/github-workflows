@@ -252,16 +252,19 @@ jobs:
           ENV DD_VERSION=${{ needs.init.outputs.version }}
 
           # Remove default nginx static assets
-          RUN rm -rf /usr/share/nginx/html/*
+          RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
           # Copy compiled frontend from the builder stage
           COPY --from=builder /build/${{ inputs.build_output_dir }} /usr/share/nginx/html
+
+          # Copy custom nginx configuration
+          COPY nginx.conf /etc/nginx/conf.d/default.conf
 
           # Allow nginx to run as non-root
           RUN chown -R nginx:nginx /usr/share/nginx/html && \
               chmod -R 755 /usr/share/nginx/html
 
-          EXPOSE 80
+          EXPOSE 8000
           CMD ["nginx", "-g", "daemon off;"]
           EOF
           else
