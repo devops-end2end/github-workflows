@@ -227,11 +227,6 @@ jobs:
           ./gradlew bootJar --no-daemon
 
       - name: Ensure Dockerfile Exists
-        env:
-          PROJECT_NAME: ${{ needs.init.outputs.project_name }}
-          VERSION: ${{ needs.init.outputs.version }}
-          BASE_IMAGE: ${{ needs.init.outputs.base_image }}
-          DESCRIPTION: ${{ inputs.description }}
         run: |
           if [ ! -f Dockerfile ]; then
             echo "No local Dockerfile found. Baking multi-stage Java default into the workspace..."
@@ -239,7 +234,7 @@ jobs:
           # ==========================================
           # Stage 1: Build Jar via Gradle
           # ==========================================
-          FROM amazoncorretto:${{ inputs.java_version }}-alpine AS builder
+          FROM ${{ needs.init.outputs.base_image }} AS builder
           WORKDIR /build
           COPY . .
           RUN chmod +x gradlew && ./gradlew bootJar --no-daemon
@@ -247,28 +242,23 @@ jobs:
           # ==========================================
           # Stage 2: Minimal Runtime Image
           # ==========================================
-          FROM ${BASE_IMAGE} AS runtime
-          ARG DESCRIPTION
-          ARG VERSION
-          ARG PROJECT_NAME
+          FROM ${{ needs.init.outputs.base_image }} AS runtime
 
-          LABEL com.admarketplace.maintainer=ci@admarketplace.com
-          LABEL com.admarketplace.description=${DESCRIPTION}
-          LABEL com.admarketplace.version=${VERSION}
-          LABEL com.datadoghq.tags.service=${PROJECT_NAME}
-          LABEL com.datadoghq.tags.version=${VERSION}
+          LABEL com.datadoghq.tags.service=${{ needs.init.outputs.project_name }}
+          LABEL com.datadoghq.tags.version=${{ needs.init.outputs.version }}
 
-          ENV DD_SERVICE=${PROJECT_NAME}
-          ENV DD_VERSION=${VERSION}
+          ENV DD_SERVICE=${{ needs.init.outputs.project_name }}
+          ENV DD_VERSION=${{ needs.init.outputs.version }}
 
-          RUN addgroup -S ampdev && adduser -S jobuser -G ampdev
+          RUN addgroup -g 65532 -S nonroot && \
+              adduser -u 65532 -S nonroot -G nonroot
           WORKDIR /app
 
           # Copy the built jar from the builder stage safely
           COPY --from=builder /build/build/libs/*.jar /app/app.jar
 
-          RUN chown -R jobuser:ampdev /app
-          USER jobuser
+          RUN chown -R nonroot:nonroot /app
+          USER nonroot
 
           EXPOSE 8080
           ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -304,11 +294,6 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }}
           cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }},mode=min
-          build-args: |
-            VERSION=${{ needs.init.outputs.version }}
-            BASE_IMAGE=${{ needs.init.outputs.base_image }}
-            PROJECT_NAME=${{ needs.init.outputs.project_name }}
-            DESCRIPTION=${{ inputs.description || needs.init.outputs.project_name }}
 
       - name: Set Image Output
         id: build-output
