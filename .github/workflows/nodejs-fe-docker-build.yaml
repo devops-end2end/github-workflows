@@ -3,7 +3,7 @@ name: Reusable Node.js Frontend Docker Build & Push
 on:
   workflow_call:
     inputs:
-      node_version:
+      nodejs_version:
         required: true
         type: string
         description: "Target Node.js runtime version (e.g., 18, 20, 22)"
@@ -63,10 +63,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Calculate and Validate Environment Variables
@@ -124,10 +124,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Install Dependencies
@@ -185,10 +185,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Install Dependencies
@@ -212,10 +212,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ inputs.node_version }}
+      - name: Set up Node.js ${{ inputs.nodejs_version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "${{ inputs.node_version }}"
+          node-version: "${{ inputs.nodejs_version }}"
           cache: "npm"
 
       - name: Install Dependencies
@@ -233,7 +233,7 @@ jobs:
           # ==========================================
           # Stage 1: Build static assets via Node.js
           # ==========================================
-          FROM node:${{ inputs.node_version }}-alpine AS builder
+          FROM node:${{ inputs.nodejs_version }}-alpine AS builder
           WORKDIR /build
           COPY package*.json ./
           RUN npm ci
