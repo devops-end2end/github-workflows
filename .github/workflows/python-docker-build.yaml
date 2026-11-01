@@ -221,9 +221,6 @@ jobs:
           [ -d scripts ] && cp -r scripts target/ || true
 
       - name: Ensure Dockerfile Exists
-        env:
-          PROJECT_NAME: ${{ needs.init.outputs.project_name }}
-          VERSION: ${{ needs.init.outputs.version }}
         run: |
           if [ ! -f Dockerfile ]; then
             echo "No local Dockerfile found. Baking multi-stage Amazon Linux 2023 default into the workspace..."
@@ -331,11 +328,6 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }}
           cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }},mode=min
-          build-args: |
-            VERSION=${{ needs.init.outputs.version }}
-            BASE_IMAGE=${{ needs.init.outputs.base_image }}
-            PROJECT_NAME=${{ needs.init.outputs.project_name }}
-            DESCRIPTION=${{ inputs.description || needs.init.outputs.project_name }}
 
       - name: Set Image Output
         id: build-output
