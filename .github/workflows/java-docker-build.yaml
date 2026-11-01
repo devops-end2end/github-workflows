@@ -204,7 +204,7 @@ jobs:
       - name: Set up JDK ${{ inputs.java_version }}
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
+          distribution: "corretto"
           java-version: "${{ inputs.java_version }}"
           cache: "gradle"
 
@@ -230,6 +230,8 @@ jobs:
         env:
           PROJECT_NAME: ${{ needs.init.outputs.project_name }}
           VERSION: ${{ needs.init.outputs.version }}
+          BASE_IMAGE: ${{ needs.init.outputs.base_image }}
+          DESCRIPTION: ${{ inputs.description }}
         run: |
           if [ ! -f Dockerfile ]; then
             echo "No local Dockerfile found. Baking multi-stage Java default into the workspace..."
