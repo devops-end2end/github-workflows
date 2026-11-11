@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: "true"
+      aws_region:
+        description: "AWS Region"
+        required: false
+        type: string
+        default: "us-east-1"
     secrets:
       ARGOCD_AUTH_TOKEN:
         required: true
@@ -98,6 +103,16 @@ jobs:
             chmod +x argocd
             sudo mv argocd /usr/local/bin/
           fi
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: "arn:aws:iam::932399238655:role/github-actions-ecr-role"
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       # Install Cosign only when a digest is provided. The verify steps below are a hard gate —
       # the workflow will fail before touching the GitOps repo if verification does not pass.
