@@ -16,7 +16,7 @@ on:
         description: "Override base docker image"
         required: false
         type: string
-      ecr-repository:
+      ecr_repository:
         description: "Override the ECR repository name (defaults to the GitHub repository name)"
         required: false
         type: string
@@ -333,17 +333,17 @@ jobs:
           push: true
           provenance: mode=max
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:latest
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}
-          cache-to: type=gha,scope=${{ inputs['ecr-repository'] || needs.init.outputs.project_name }},mode=min
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository || needs.init.outputs.project_name }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository || needs.init.outputs.project_name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.ecr_repository || needs.init.outputs.project_name }}
+          cache-to: type=gha,scope=${{ inputs.ecr_repository || needs.init.outputs.project_name }},mode=min
 
       - name: Set Image Output
         id: build-output
         shell: bash
         env:
-          IMAGE_NAME: ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}
+          IMAGE_NAME: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository || needs.init.outputs.project_name }}
         run: |
           echo "image=${IMAGE_NAME}:${{ needs.init.outputs.version }}" >> "$GITHUB_OUTPUT"
 
