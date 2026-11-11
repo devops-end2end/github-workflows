@@ -142,11 +142,24 @@ jobs:
 
           echo "✓ Image signature verified"
 
-          cosign verify-attestation \
+          set +e
+
+          timeout 210s cosign verify-attestation \
+            --verbose \
+            --timeout=180s \
             --type cyclonedx \
             --certificate-identity="$COSIGN_IDENTITY" \
             --certificate-oidc-issuer="$COSIGN_ISSUER" \
-            "$IMAGE_REF"
+            "$IMAGE_REF" 2>&1 | tee /tmp/cosign-attestation.log
+
+          RESULT=${PIPESTATUS[0]}
+          set -e
+
+          echo "Cosign exit code: $RESULT"
+
+          if [ "$RESULT" -ne 0 ]; then
+            exit "$RESULT"
+          fi
 
           echo "✓ SBOM attestation verified"
 

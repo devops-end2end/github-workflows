@@ -371,6 +371,11 @@ jobs:
           set -euo pipefail
           IMAGE_REF="${IMAGE}@${DIGEST}"
 
+          # Check SBOM size before attestation
+          echo "SBOM file details:"
+          ls -lh sbom.cdx.json
+          du -h sbom.cdx.json
+
           # Sign the immutable image digest, not a mutable tag.
           cosign sign --yes "$IMAGE_REF"
 
