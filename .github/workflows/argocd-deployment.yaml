@@ -11,6 +11,20 @@ on:
         description: "Complete container image reference"
         required: true
         type: string
+      DIGEST:
+        description: "Immutable image digest (sha256:...) for Cosign signature and SBOM attestation verification. When provided, verification is a hard gate — deployment is blocked if the image is not signed or the SBOM attestation is missing."
+        required: false
+        type: string
+        # --- Attestation Verification Strategy ---
+        # Option A (current): Cosign verifies the signature and SBOM attestation before any GitOps
+        #   commit is made. Deployment proceeds using the mutable image tag. Fast, no GitOps
+        #   repo structure changes needed.
+        #
+        # Option B (future consideration): In addition to Option A verification, replace the
+        #   mutable image tag in the kustomization patch with an immutable image@digest reference
+        #   (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/my-app@sha256:abc...). ArgoCD then
+        #   deploys by digest, making the deployed ref fully pinned and traceable. Requires the
+        #   GitOps kustomization patch structure to support image@digest syntax.
       APPSET_PATH:
         description: "Path to single-env ApplicationSet manifest in GitOps repository"
         required: true
@@ -84,6 +98,40 @@ jobs:
             chmod +x argocd
             sudo mv argocd /usr/local/bin/
           fi
+
+      # Install Cosign only when a digest is provided. The verify steps below are a hard gate —
+      # the workflow will fail before touching the GitOps repo if verification does not pass.
+      - name: Install Cosign
+        if: ${{ inputs.DIGEST != '' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify image signature and SBOM attestation
+        if: ${{ inputs.DIGEST != '' }}
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.IMAGE }}
+          DIGEST: ${{ inputs.DIGEST }}
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${IMAGE}@${DIGEST}"
+          echo "Verifying Cosign signature for: $IMAGE_REF"
+
+          # Verify the keyless image signature (signed with GitHub Actions OIDC identity).
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/devops-end2end/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_REF"
+
+          echo "✓ Image signature verified"
+
+          # Verify the CycloneDX SBOM attestation is present and validly signed.
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-identity-regexp "https://github.com/devops-end2end/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_REF"
+
+          echo "✓ SBOM attestation verified"
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
