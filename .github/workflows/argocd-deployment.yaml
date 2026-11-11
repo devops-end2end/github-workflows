@@ -147,6 +147,7 @@ jobs:
           time timeout 210s cosign verify-attestation \
             --output=text \
             --type cyclonedx \
+            --offline \
             --certificate-identity="$COSIGN_IDENTITY" \
             --certificate-oidc-issuer="$COSIGN_ISSUER" \
             "$IMAGE_REF"
