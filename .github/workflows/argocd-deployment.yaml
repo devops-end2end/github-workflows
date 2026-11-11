@@ -129,21 +129,23 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE_REF="${IMAGE}@${DIGEST}"
+
+          COSIGN_IDENTITY="https://github.com/devops-end2end/github-workflows/.github/workflows/python-docker-build.yaml@refs/heads/main"
+          COSIGN_ISSUER="https://token.actions.githubusercontent.com"
+
           echo "Verifying Cosign signature for: $IMAGE_REF"
 
-          # Verify the keyless image signature (signed with GitHub Actions OIDC identity).
           cosign verify \
-            --certificate-identity-regexp "https://github.com/devops-end2end/.*" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity="$COSIGN_IDENTITY" \
+            --certificate-oidc-issuer="$COSIGN_ISSUER" \
             "$IMAGE_REF"
 
           echo "✓ Image signature verified"
 
-          # Verify the CycloneDX SBOM attestation is present and validly signed.
           cosign verify-attestation \
             --type cyclonedx \
-            --certificate-identity-regexp "https://github.com/devops-end2end/.*" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity="$COSIGN_IDENTITY" \
+            --certificate-oidc-issuer="$COSIGN_ISSUER" \
             "$IMAGE_REF"
 
           echo "✓ SBOM attestation verified"
