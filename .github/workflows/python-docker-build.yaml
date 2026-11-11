@@ -16,6 +16,10 @@ on:
         description: "Override base docker image"
         required: false
         type: string
+      ecr-repository:
+        description: "Override the ECR repository name (defaults to the GitHub repository name)"
+        required: false
+        type: string
       aws_region:
         description: "AWS Region"
         required: false
@@ -33,6 +37,9 @@ on:
       image:
         description: "The built container image tag"
         value: ${{ jobs.build-and-push.outputs.image }}
+      digest:
+        description: "The immutable image digest"
+        value: ${{ jobs.build-and-push.outputs.digest }}
 
 permissions:
   id-token: write
@@ -202,6 +209,7 @@ jobs:
       contents: read
     outputs:
       image: ${{ steps.build-output.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -318,19 +326,56 @@ jobs:
           driver: docker-container
 
       - name: Build and Push Docker Image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          provenance: mode=max
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:latest
-            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr-repository || needs.init.outputs.project_name }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }}
-          cache-to: type=gha,scope=${{ inputs.ecr-repository || needs.init.outputs.project_name }},mode=min
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}
+          cache-to: type=gha,scope=${{ inputs['ecr-repository'] || needs.init.outputs.project_name }},mode=min
 
       - name: Set Image Output
         id: build-output
         shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.login-ecr.outputs.registry }}/${{ inputs['ecr-repository'] || needs.init.outputs.project_name }}
         run: |
-          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ needs.init.outputs.project_name }}:${{ needs.init.outputs.version }}" >> $GITHUB_OUTPUT
+          echo "image=${IMAGE_NAME}:${{ needs.init.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      # Generate the SBOM from the exact immutable image digest pushed to ECR.
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.build-output.outputs.image }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: true
+          artifact-name: sbom-${{ needs.init.outputs.project_name }}-${{ needs.init.outputs.version }}.cdx.json
+          upload-release-assets: false
+
+      # Install Cosign and use GitHub's OIDC identity for keyless signing.
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image and attach signed SBOM attestation
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build-output.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${IMAGE}@${DIGEST}"
+
+          # Sign the immutable image digest, not a mutable tag.
+          cosign sign --yes "$IMAGE_REF"
+
+          # Attach the CycloneDX SBOM as a signed in-toto attestation.
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate sbom.cdx.json \
+            "$IMAGE_REF"
