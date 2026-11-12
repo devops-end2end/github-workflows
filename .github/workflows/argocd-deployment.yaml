@@ -149,13 +149,13 @@ jobs:
 
           # This feature has been disabled because it indefinately hangs.  
           # Switching out to Notation or Amazon ECR managed signing 
-          # echo "Verifying CycloneDX SBOM attestation..."
-          # cosign verify-attestation \
-          #   --type cyclonedx \
-          #   --certificate-identity="$COSIGN_IDENTITY" \
-          #   --certificate-oidc-issuer="$COSIGN_ISSUER" \
-          #   "$IMAGE_REF"
-          # echo "✓ SBOM attestation verified"
+          echo "Verifying CycloneDX SBOM attestation..."
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-identity="$COSIGN_IDENTITY" \
+            --certificate-oidc-issuer="$COSIGN_ISSUER" \
+            "$IMAGE_REF" > /dev/null
+          echo "✓ SBOM attestation verified"
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
