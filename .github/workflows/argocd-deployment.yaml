@@ -151,6 +151,7 @@ jobs:
 
           cosign verify-attestation \
             --type cyclonedx \
+            --verbose \
             --certificate-identity="$COSIGN_IDENTITY" \
             --certificate-oidc-issuer="$COSIGN_ISSUER" \
             "$IMAGE_REF"
