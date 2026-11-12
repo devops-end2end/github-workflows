@@ -154,7 +154,7 @@ jobs:
             --verbose \
             --certificate-identity="$COSIGN_IDENTITY" \
             --certificate-oidc-issuer="$COSIGN_ISSUER" \
-            "$IMAGE_REF"
+            "$IMAGE_REF" > output
 
           echo "✓ SBOM attestation verified"
 
