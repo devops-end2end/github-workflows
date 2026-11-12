@@ -118,7 +118,7 @@ jobs:
       # the workflow will fail before touching the GitOps repo if verification does not pass.
       - name: Install Cosign
         if: ${{ inputs.DIGEST != '' }}
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4.1.3
         with:
           cosign-release: "v3.1.4"
 
