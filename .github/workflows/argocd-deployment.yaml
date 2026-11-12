@@ -116,6 +116,9 @@ jobs:
 
       # Install Cosign only when a digest is provided. The verify steps below are a hard gate —
       # the workflow will fail before touching the GitOps repo if verification does not pass.
+      - name: Install gettext-base (for envsubst)
+        run: sudo apt-get update && sudo apt-get install -y gettext-base
+
       - name: Install Cosign
         if: ${{ inputs.DIGEST != '' }}
         uses: sigstore/cosign-installer@v4.1.3
