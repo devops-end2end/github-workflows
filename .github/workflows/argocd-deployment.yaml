@@ -119,6 +119,8 @@ jobs:
       - name: Install Cosign
         if: ${{ inputs.DIGEST != '' }}
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v3.1.4"
 
       - name: Verify image signature and SBOM attestation
         if: ${{ inputs.DIGEST != '' }}
